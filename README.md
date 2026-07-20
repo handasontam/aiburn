@@ -4,8 +4,9 @@ Fast, local usage & cost reporting for **Claude Code** and **Codex** — in one 
 
 A deliberately small alternative to [ccusage](https://github.com/ccusage/ccusage),
 scoped to just the two agents I use. It reads your local session logs, prices
-them offline, and prints per-day / per-month / per-session cost. Scanning ~1.5 GB
-of logs takes **well under a second** — no network, no cache, no build step.
+them offline, and prints per-day / per-month / per-session cost. A single
+static binary with **sub-millisecond startup**; it **streams** the logs so
+memory stays flat even when they grow to tens of GB.
 
 ```
 $ aitally
@@ -23,22 +24,19 @@ Claude      $249.52   177,853,108 tokens
 Codex        $64.81    83,008,328 tokens
 Total       $314.33
 
-Scanned 770 files in 584ms
+Scanned 1166 files in 413ms
 ```
 
 ## Install
 
-Requires [Bun](https://bun.sh). From the repo:
+Requires a [Rust toolchain](https://rustup.rs). From the repo:
 
 ```sh
-bun install      # dev-only: @types/bun for the optional typecheck
-bun link         # registers the global `aitally` command
+cargo install --path .     # builds and installs `aitally` to ~/.cargo/bin
 ```
 
-Then run `aitally` from anywhere.
-
-> `bunx aitally` (no clone) works only once the package is published to npm.
-> Until then, `bun link` is the local equivalent.
+Then run `aitally` from anywhere. (Or `cargo build --release` and copy
+`target/release/aitally` onto your `PATH`.)
 
 ## Usage
 
@@ -72,7 +70,7 @@ Options:
 
 ## How cost is computed
 
-Pricing is a small curated table in [`src/pricing.ts`](src/pricing.ts), taken
+Pricing is a small curated table in [`src/pricing.rs`](src/pricing.rs), taken
 from LiteLLM / models.dev (July 2026). Costs are always recomputed from tokens —
 the logged `costUSD` is ignored so both agents are priced consistently.
 
@@ -85,14 +83,23 @@ the logged `costUSD` is ignored so both agents are priced consistently.
 Claude totals match ccusage to within ~0.3%. Codex is approximate (~1–2%):
 Codex logs carry no authoritative cost, and standard pricing is assumed.
 
-To add or correct a model, edit the `RATES` table in `src/pricing.ts`.
+To add or correct a model, edit the `table()` in `src/pricing.rs`.
 
-## Why it's fast
+## Why it's fast (and light)
 
-- Files are scanned as raw bytes; only the handful of lines containing token
-  usage are decoded and `JSON.parse`d (native `Buffer.indexOf`, no per-char loop).
-- Files are read concurrently across CPU cores.
-- Pricing is embedded — no network request.
+- **Streaming reader** — files are read one line at a time with a reused
+  buffer, so peak memory is bounded to a single line, not the file. Scanning
+  ~1.5 GB of logs uses ~120 MB regardless of individual file size (some reach
+  150 MB).
+- **Field-scanning parser** — a tiny hand-rolled JSON scanner
+  ([`src/json.rs`](src/json.rs)) reads only the few fields it needs and skips
+  everything else (the large `content` blocks) without allocating.
+- **Parallel** — files are parsed across all cores with `rayon`.
+- **Embedded pricing** — no network request, no config.
+- **No heavyweight deps** — `rayon` + `libc` only; dates via `libc::localtime_r`.
+
+Measured on ~1.5 GB of logs (~1,166 files): cold ~1.2 s, warm ~0.4 s, ~120 MB
+peak RSS, sub-millisecond process startup, 458 KB binary.
 
 ## License
 

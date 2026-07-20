@@ -1,0 +1,21 @@
+[package]
+name = "aitally"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Claude Code + Codex usage and cost, from your local logs."
+license = "MIT"
+
+[[bin]]
+name = "aitally"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
