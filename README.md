@@ -88,18 +88,23 @@ To add or correct a model, edit the `table()` in `src/pricing.rs`.
 ## Why it's fast (and light)
 
 - **Streaming reader** — files are read one line at a time with a reused
-  buffer, so peak memory is bounded to a single line, not the file. Scanning
-  ~1.5 GB of logs uses ~120 MB regardless of individual file size (some reach
-  150 MB).
+  buffer, so a 150 MB session file costs one line of memory, not 150 MB.
+- **Incremental aggregation** — each usage record is folded into the running
+  totals ([`src/agg.rs`](src/agg.rs)) as it is parsed and then dropped. Peak
+  memory scales with the number of *groups* (days / months / sessions), not the
+  number of events, so it stays flat as Codex logs grow into the tens of GB.
+  Claude is deduplicated by `(message id, request id)` first — bounded by
+  message count, not raw log size.
 - **Field-scanning parser** — a tiny hand-rolled JSON scanner
   ([`src/json.rs`](src/json.rs)) reads only the few fields it needs and skips
   everything else (the large `content` blocks) without allocating.
-- **Parallel** — files are parsed across all cores with `rayon`.
+- **Parallel** — files are parsed across all cores with `rayon` (Codex via a
+  parallel reduce over per-file reports).
 - **Embedded pricing** — no network request, no config.
 - **No heavyweight deps** — `rayon` + `libc` only; dates via `libc::localtime_r`.
 
-Measured on ~1.5 GB of logs (~1,166 files): cold ~1.2 s, warm ~0.4 s, ~120 MB
-peak RSS, sub-millisecond process startup, 458 KB binary.
+Measured on ~1.5 GB of logs / ~2.9 B tokens (~1,166 files): cold ~1.2 s,
+warm ~0.25 s, ~80 MB peak RSS, sub-millisecond process startup, ~470 KB binary.
 
 ## License
 

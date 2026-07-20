@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+use crate::agg::{Query, Report};
 use crate::json::{contains, P};
 use crate::model::{Agent, Tokens, UsageRow};
 use crate::pricing::cost_for;
@@ -88,11 +89,6 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
     Some(e)
 }
 
-struct Parsed {
-    session_id: Option<String>,
-    rows: Vec<UsageRow>,
-}
-
 /// Existing Codex session directories to scan.
 pub fn codex_dirs() -> Vec<PathBuf> {
     let base = std::env::var_os("CODEX_HOME")
@@ -138,14 +134,13 @@ fn sub(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     }
 }
 
-fn parse_file(path: &Path) -> Parsed {
-    let sid = uuid_from_name(path);
-    let session_id = sid.clone().unwrap_or_else(|| file_stem(path));
+fn build_report(path: &Path, q: &Query) -> Report {
+    let session_id = uuid_from_name(path).unwrap_or_else(|| file_stem(path));
 
     let mut model: Option<String> = None;
     let mut project = String::new();
     let mut prev_total: Option<RawUsage> = None;
-    let mut rows: Vec<UsageRow> = Vec::new();
+    let mut report = Report::default();
 
     for_each_line(path, |line| {
         let is_turn = contains(line, b"\"turn_context\"");
@@ -193,39 +188,45 @@ fn parse_file(path: &Path) -> Parsed {
         };
         let m = model.clone().unwrap_or_else(|| "unknown".to_string());
         let (cost, priced) = cost_for(&m, &tokens);
-        rows.push(UsageRow {
-            agent: Agent::Codex,
-            timestamp: ts_ms,
-            date,
-            month,
-            session_id: session_id.clone(),
-            project: project.clone(),
-            model: m,
-            tokens,
-            cost,
-            priced,
-        });
+        report.add(
+            q,
+            &UsageRow {
+                agent: Agent::Codex,
+                timestamp: ts_ms,
+                date,
+                month,
+                session_id: session_id.clone(),
+                project: project.clone(),
+                model: m,
+                tokens,
+                cost,
+                priced,
+            },
+        );
     });
 
-    Parsed { session_id: sid, rows }
+    report
 }
 
-pub fn load(files: &[PathBuf]) -> Vec<UsageRow> {
-    // `collect` preserves input order, so dedup is deterministic.
-    let parsed: Vec<Parsed> = files.par_iter().map(|f| parse_file(f)).collect();
+pub fn load(files: &[PathBuf], q: &Query) -> Report {
+    // One session per rollout file; drop files whose session id already
+    // appeared (e.g. a live session later archived) before aggregating, so
+    // the parallel reduce is a pure sum with no double counting.
+    let mut sorted: Vec<&PathBuf> = files.iter().collect();
+    sorted.sort();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut rows: Vec<UsageRow> = Vec::new();
-    for p in parsed {
-        // One session per rollout file; skip if the same session id reappears
-        // (e.g. a live session that was later archived).
-        if let Some(sid) = &p.session_id {
-            if !seen.insert(sid.clone()) {
-                continue;
-            }
-        }
-        rows.extend(p.rows);
-    }
-    rows
+    let deduped: Vec<&PathBuf> = sorted
+        .into_iter()
+        .filter(|f| {
+            let sid = uuid_from_name(f).unwrap_or_else(|| file_stem(f));
+            seen.insert(sid)
+        })
+        .collect();
+
+    deduped
+        .into_par_iter()
+        .map(|f| build_report(f, q))
+        .reduce(Report::default, Report::merged)
 }
 
 pub fn files() -> Vec<PathBuf> {

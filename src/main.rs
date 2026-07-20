@@ -1,3 +1,4 @@
+mod agg;
 mod claude;
 mod codex;
 mod json;
@@ -6,11 +7,11 @@ mod pricing;
 mod time;
 mod util;
 
-use std::collections::BTreeSet;
 use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
-use model::{Agent, UsageRow};
+use agg::{Command, Footer, Group, Query, Report};
+use model::Agent;
 use util::{commas, cost, render_table, Paint};
 
 const HELP: &str = "aitally — fast Claude Code + Codex usage & cost
@@ -32,13 +33,6 @@ Options:
   --json                 Emit JSON instead of a table
   -h, --help             Show this help
   -v, --version          Show version";
-
-#[derive(Clone, Copy, PartialEq)]
-enum Command {
-    Daily,
-    Monthly,
-    Session,
-}
 
 struct Options {
     command: Command,
@@ -107,82 +101,6 @@ fn parse_args() -> Result<Options, i32> {
     Ok(o)
 }
 
-fn in_range(r: &UsageRow, o: &Options) -> bool {
-    if let Some(ag) = o.agent {
-        if r.agent != ag {
-            return false;
-        }
-    }
-    if let Some(since) = &o.since {
-        if &r.date < since {
-            return false;
-        }
-    }
-    if let Some(until) = &o.until {
-        if &r.date > until {
-            return false;
-        }
-    }
-    true
-}
-
-#[derive(Default)]
-struct Group {
-    key: String,
-    claude_cost: f64,
-    codex_cost: f64,
-    input: u64,
-    output: u64,
-    cache: u64,
-    models: BTreeSet<String>,
-    agents: BTreeSet<&'static str>,
-    project: String,
-    last_ts: i64,
-}
-
-impl Group {
-    fn total(&self) -> f64 {
-        self.claude_cost + self.codex_cost
-    }
-}
-
-fn group_by(rows: &[UsageRow], command: Command) -> Vec<Group> {
-    use std::collections::HashMap;
-    let mut map: HashMap<String, Group> = HashMap::new();
-    for r in rows {
-        let key = match command {
-            Command::Monthly => r.month.clone(),
-            Command::Session => format!("{}:{}", r.agent.as_str(), r.session_id),
-            Command::Daily => r.date.clone(),
-        };
-        let g = map.entry(key.clone()).or_insert_with(|| Group {
-            key,
-            ..Default::default()
-        });
-        match r.agent {
-            Agent::Claude => g.claude_cost += r.cost,
-            Agent::Codex => g.codex_cost += r.cost,
-        }
-        g.input += r.tokens.input;
-        g.output += r.tokens.output;
-        g.cache += r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h;
-        g.models.insert(r.model.clone());
-        g.agents.insert(r.agent.as_str());
-        if g.project.is_empty() && !r.project.is_empty() {
-            g.project = r.project.clone();
-        }
-        if r.timestamp > g.last_ts {
-            g.last_ts = r.timestamp;
-        }
-    }
-    let mut groups: Vec<Group> = map.into_values().collect();
-    match command {
-        Command::Session => groups.sort_by(|a, b| b.last_ts.cmp(&a.last_ts)),
-        _ => groups.sort_by(|a, b| a.key.cmp(&b.key)),
-    }
-    groups
-}
-
 fn short_model(m: &str) -> String {
     m.strip_prefix("claude-").unwrap_or(m).to_string()
 }
@@ -195,7 +113,7 @@ fn dash(v: f64) -> String {
     }
 }
 
-fn render_period(groups: &[Group], label: &str, paint: &Paint) -> String {
+fn render_period(groups: &[&Group], label: &str, paint: &Paint) -> String {
     let rows: Vec<Vec<String>> = groups
         .iter()
         .map(|g| {
@@ -236,8 +154,8 @@ fn render_period(groups: &[Group], label: &str, paint: &Paint) -> String {
     )
 }
 
-fn render_session(groups: &[Group], all: bool, paint: &Paint) -> (String, Option<String>) {
-    let shown: &[Group] = if all || groups.len() <= 25 {
+fn render_session(groups: &[&Group], all: bool, paint: &Paint) -> (String, Option<String>) {
+    let shown: &[&Group] = if all || groups.len() <= 25 {
         groups
     } else {
         &groups[..25]
@@ -293,62 +211,39 @@ fn render_session(groups: &[Group], all: bool, paint: &Paint) -> (String, Option
     (table, note)
 }
 
-fn render_footer(rows: &[UsageRow], elapsed_ms: u128, file_count: usize, paint: &Paint) -> String {
-    let (mut claude, mut codex) = (0.0, 0.0);
-    let (mut claude_tok, mut codex_tok) = (0u64, 0u64);
-    let mut unpriced_tok = 0u64;
-    let mut unpriced_models: BTreeSet<String> = BTreeSet::new();
-    for r in rows {
-        let tok = r.tokens.total();
-        match r.agent {
-            Agent::Claude => {
-                claude += r.cost;
-                claude_tok += tok;
-            }
-            Agent::Codex => {
-                codex += r.cost;
-                codex_tok += tok;
-            }
-        }
-        if !r.priced {
-            unpriced_tok += tok;
-            unpriced_models.insert(r.model.clone());
-        }
-    }
+fn render_footer(f: &Footer, elapsed_ms: u128, file_count: usize, paint: &Paint) -> String {
     let mut lines = vec![
         String::new(),
         format!(
             "{}  {:>11}   {} tokens",
             paint.cyan("Claude"),
-            cost(claude),
-            commas(claude_tok)
+            cost(f.claude_cost),
+            commas(f.claude_tokens)
         ),
         format!(
             "{}  {:>11}   {} tokens",
             paint.green("Codex "),
-            cost(codex),
-            commas(codex_tok)
+            cost(f.codex_cost),
+            commas(f.codex_tokens)
         ),
         format!(
             "{}  {}",
             paint.bold("Total "),
-            paint.bold(&format!("{:>11}", cost(claude + codex)))
+            paint.bold(&format!("{:>11}", cost(f.claude_cost + f.codex_cost)))
         ),
     ];
-    if unpriced_tok > 0 {
+    if f.unpriced_tokens > 0 {
         lines.push(paint.yellow(&format!(
             "\n! {} tokens had no known pricing ({}); excluded from cost.",
-            commas(unpriced_tok),
-            unpriced_models.into_iter().collect::<Vec<_>>().join(", ")
+            commas(f.unpriced_tokens),
+            f.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", ")
         )));
     }
-    lines.push(paint.dim(&format!(
-        "\nScanned {file_count} files in {elapsed_ms}ms"
-    )));
+    lines.push(paint.dim(&format!("\nScanned {file_count} files in {elapsed_ms}ms")));
     lines.join("\n")
 }
 
-fn json_report(command: &str, groups: &[Group]) -> String {
+fn json_report(command: &str, groups: &[&Group]) -> String {
     let esc = json::escape;
     let arr = |v: &[String]| {
         v.iter()
@@ -393,6 +288,12 @@ fn run() -> i32 {
         Ok(o) => o,
         Err(code) => return code,
     };
+    let query = Query {
+        command: o.command,
+        agent: o.agent,
+        since: o.since.clone(),
+        until: o.until.clone(),
+    };
 
     let t0 = Instant::now();
     let claude_files = if o.agent == Some(Agent::Codex) {
@@ -407,24 +308,22 @@ fn run() -> i32 {
     };
     let file_count = claude_files.len() + codex_files.len();
 
-    let (claude_rows, codex_rows) = rayon::join(
-        || claude::load(&claude_files),
-        || codex::load(&codex_files),
+    let (claude_report, codex_report) = rayon::join(
+        || claude::load(&claude_files, &query),
+        || codex::load(&codex_files, &query),
     );
-    let mut rows: Vec<UsageRow> = claude_rows;
-    rows.extend(codex_rows);
-    rows.retain(|r| in_range(r, &o));
+    let report: Report = claude_report.merged(codex_report);
     let elapsed = t0.elapsed().as_millis();
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    if rows.is_empty() {
+    if report.groups.is_empty() {
         let _ = writeln!(out, "No usage found.");
         return 0;
     }
 
-    let groups = group_by(&rows, o.command);
+    let groups = report.sorted_groups(o.command);
 
     if o.json {
         let command = match o.command {
@@ -451,7 +350,7 @@ fn run() -> i32 {
             let _ = writeln!(out, "{}", render_period(&groups, label, &paint));
         }
     }
-    let _ = writeln!(out, "{}", render_footer(&rows, elapsed, file_count, &paint));
+    let _ = writeln!(out, "{}", render_footer(&report.footer, elapsed, file_count, &paint));
     0
 }
 

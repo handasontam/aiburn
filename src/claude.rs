@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+use crate::agg::{Query, Report};
 use crate::json::{contains, P};
 use crate::model::{Agent, Tokens, UsageRow};
 use crate::pricing::cost_for;
@@ -89,7 +90,11 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
 }
 
 struct Parsed {
-    keyed: Vec<(String, UsageRow)>,
+    /// One winner per (message id, request id), already deduped within this
+    /// file (input/cache are constant across a message's streamed snapshots;
+    /// output grows, so keep the largest).
+    keyed: HashMap<String, UsageRow>,
+    /// Assistant rows lacking an id/req pair — never deduped.
     keyless: Vec<UsageRow>,
 }
 
@@ -131,7 +136,7 @@ fn parse_file(path: &Path) -> Parsed {
     let folder_project = project_from_folder(path);
     let stem = file_stem(path);
     let mut out = Parsed {
-        keyed: Vec::new(),
+        keyed: HashMap::new(),
         keyless: Vec::new(),
     };
 
@@ -184,18 +189,28 @@ fn parse_file(path: &Path) -> Parsed {
         // (message id, request id): input/cache stay constant while output
         // grows, so keep the record with the largest output (the final one).
         match (e.msg_id, e.request_id) {
-            (Some(id), Some(req)) => out.keyed.push((format!("{id}::{req}"), row)),
+            (Some(id), Some(req)) => {
+                let k = format!("{id}::{req}");
+                match out.keyed.get(&k) {
+                    Some(prev) if prev.tokens.output >= row.tokens.output => {}
+                    _ => {
+                        out.keyed.insert(k, row);
+                    }
+                }
+            }
             _ => out.keyless.push(row),
         }
     });
     out
 }
 
-pub fn load(files: &[PathBuf]) -> Vec<UsageRow> {
-    let parsed: Vec<Parsed> = files.par_iter().map(|f| parse_file(f)).collect();
+pub fn load(files: &[PathBuf], q: &Query) -> Report {
+    let partials: Vec<Parsed> = files.par_iter().map(|f| parse_file(f)).collect();
+    // Dedup across files (resumed sessions can re-log the same message), then
+    // fold the winners in. The map is bounded by distinct message count.
     let mut keyed: HashMap<String, UsageRow> = HashMap::new();
-    let mut rows: Vec<UsageRow> = Vec::new();
-    for p in parsed {
+    let mut report = Report::default();
+    for p in partials {
         for (k, row) in p.keyed {
             match keyed.get(&k) {
                 Some(prev) if prev.tokens.output >= row.tokens.output => {}
@@ -204,10 +219,14 @@ pub fn load(files: &[PathBuf]) -> Vec<UsageRow> {
                 }
             }
         }
-        rows.extend(p.keyless);
+        for row in p.keyless {
+            report.add(q, &row);
+        }
     }
-    rows.extend(keyed.into_values());
-    rows
+    for row in keyed.into_values() {
+        report.add(q, &row);
+    }
+    report
 }
 
 pub fn files() -> Vec<PathBuf> {
