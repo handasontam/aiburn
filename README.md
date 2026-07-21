@@ -13,20 +13,26 @@ static binary with **sub-millisecond startup**; it **streams** the logs and
 $ aiburn
 aiburn · Claude Code + Codex usage
 
-Date            Input     Output          Cache     Claude    Codex      Total
-──────────  ─────────  ─────────  ─────────────  ─────────  ───────  ─────────
-2026-07-16     11,326    348,040     46,373,051     $72.79        –     $72.79
-2026-07-17      2,665    139,378     26,644,318     $33.02        –     $33.02
-2026-07-20      2,690     98,911      8,214,564      $8.03        –      $8.03
-──────────  ─────────  ─────────  ─────────────  ─────────  ───────  ─────────
-TOTAL       2,982,331  1,534,324    256,344,781    $249.52   $64.81    $314.33
+Date        Models                 Input  Output  Cache   Claude  Codex    Total
+──────────  ─────────────────────  ─────  ──────  ─────  ───────  ─────  ───────
+2026-07-15  fable-5                1.54K    141K  12.9M   $33.88      –   $33.88
+2026-07-16  fable-5, opus-4-8      11.3K    348K  46.4M   $72.79      –   $72.79
+2026-07-17  fable-5, opus-4-8      2.67K    139K  26.6M   $33.02      –   $33.02
+2026-07-20  opus-4-8, gpt-5.6-sol  66.8K    224K  24.9M   $20.44  $0.64   $21.08
+──────────  ─────────────────────  ─────  ──────  ─────  ───────  ─────  ───────
+Date        Models                 Input  Output  Cache   Claude  Codex    Total
+TOTAL                              82.4K    916K   125M  $172.79  $0.64  $173.43
 
-Claude      $249.52   177,853,108 tokens
-Codex        $64.81    83,008,328 tokens
-Total       $314.33
+Claude      $172.79   126M tokens
+Codex         $0.64   567K tokens
+Total       $173.43
 
-Scanned 1166 files in 413ms
+Scanned 1170 files in 288ms
 ```
+
+Token counts are compact (`K`/`M`/`B`/`T`) and costs exact; the column header
+repeats above the total so meanings stay on screen without scrolling. Use
+`--exact` for full token counts and `--json` for raw integers.
 
 ## Run it
 
@@ -68,6 +74,7 @@ Options:
   --claude               Only Claude Code
   --codex                Only Codex
   --all                  Show every session (session view; default: top 25)
+  --exact                Full token counts instead of K/M/B/T
   --json                 Emit JSON instead of a table
   -h, --help             Show this help
   -v, --version          Show version
@@ -139,6 +146,14 @@ git tag v0.1.0 && git push --tags
 
 The workflow builds all wheels and publishes them; `uvx aiburn` picks up the
 new version automatically.
+
+## Acknowledgements
+
+Inspired by [ccusage](https://github.com/ccusage/ccusage) by
+[@ryoppippi](https://github.com/ryoppippi) and contributors — a great, broader
+tool that covers many more agents. aiburn is a smaller Rust reimplementation
+focused on just Claude Code + Codex; the local log formats and the approach to
+pricing were learned from ccusage. ccusage is MIT licensed.
 
 ## License
 

@@ -79,6 +79,31 @@ pub fn commas(n: u64) -> String {
     out
 }
 
+/// Compact token count: `3.36B`, `50.4M`, `944K`, `56`. Precision tapers so
+/// the string stays ~4 chars: 0 decimals ≥100, 1 decimal ≥10, else 2.
+pub fn human(n: u64) -> String {
+    let f = n as f64;
+    let (v, suffix) = if f >= 1e12 {
+        (f / 1e12, "T")
+    } else if f >= 1e9 {
+        (f / 1e9, "B")
+    } else if f >= 1e6 {
+        (f / 1e6, "M")
+    } else if f >= 1e3 {
+        (f / 1e3, "K")
+    } else {
+        return n.to_string();
+    };
+    let s = if v >= 100.0 {
+        format!("{v:.0}")
+    } else if v >= 10.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.2}")
+    };
+    format!("{s}{suffix}")
+}
+
 /// Format a dollar amount as `$1,234.56`.
 pub fn cost(f: f64) -> String {
     let neg = f < 0.0;
@@ -178,6 +203,9 @@ pub fn render_table(
     }
     if let Some(t) = total {
         lines.push(rule);
+        // Repeat the header just above the total so column meanings are
+        // visible where the terminal lands (bottom) without scrolling up.
+        lines.push(paint.dim(&fmt_row(&header_owned)));
         lines.push(paint.bold(&fmt_row(t)));
     }
     lines.join("\n")

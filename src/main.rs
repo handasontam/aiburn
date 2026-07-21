@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use agg::{Command, Footer, Group, Query, Report};
 use model::Agent;
-use util::{commas, cost, render_table, Paint};
+use util::{commas, cost, human, render_table, Paint};
 
 const HELP: &str = "aiburn — fast Claude Code + Codex usage & cost
 
@@ -30,6 +30,7 @@ Options:
   --claude               Only Claude Code
   --codex                Only Codex
   --all                  Show every session (session view; default: top 25)
+  --exact                Full token counts instead of K/M/B/T
   --json                 Emit JSON instead of a table
   -h, --help             Show this help
   -v, --version          Show version";
@@ -38,6 +39,7 @@ struct Options {
     command: Command,
     json: bool,
     all: bool,
+    exact: bool,
     agent: Option<Agent>,
     since: Option<String>,
     until: Option<String>,
@@ -48,6 +50,7 @@ fn parse_args() -> Result<Options, i32> {
         command: Command::Daily,
         json: false,
         all: false,
+        exact: false,
         agent: None,
         since: None,
         until: None,
@@ -62,6 +65,7 @@ fn parse_args() -> Result<Options, i32> {
             "session" => o.command = Command::Session,
             "--json" => o.json = true,
             "--all" => o.all = true,
+            "--exact" => o.exact = true,
             "--claude" => o.agent = Some(Agent::Claude),
             "--codex" => o.agent = Some(Agent::Codex),
             "--agent" => {
@@ -101,8 +105,53 @@ fn parse_args() -> Result<Options, i32> {
     Ok(o)
 }
 
+/// Display name for a model: drop the `claude-` vendor prefix and any trailing
+/// `-YYYYMMDD` date so the Models column reads `opus-4-8`, `haiku-4-5`, `gpt-5.5`.
 fn short_model(m: &str) -> String {
-    m.strip_prefix("claude-").unwrap_or(m).to_string()
+    let m = m.strip_prefix("claude-").unwrap_or(m);
+    match m.rsplit_once('-') {
+        Some((head, tail)) if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) => {
+            head.to_string()
+        }
+        _ => m.to_string(),
+    }
+}
+
+/// Token count formatter: compact (K/M/B/T) by default, full with `--exact`.
+fn tok(n: u64, exact: bool) -> String {
+    if exact {
+        commas(n)
+    } else {
+        human(n)
+    }
+}
+
+/// Compact, comma-joined short model names for a group. If the full list is too
+/// wide, keep whole names that fit and summarize the rest as `+N` (never cuts a
+/// name mid-word).
+fn models_cell(g: &Group) -> String {
+    let names: Vec<String> = g.models.iter().map(|m| short_model(m)).collect();
+    let full = names.join(", ");
+    if full.chars().count() <= 40 {
+        return full;
+    }
+    let mut out = String::new();
+    let mut shown = 0;
+    for n in &names {
+        let piece_len = n.chars().count() + if out.is_empty() { 0 } else { 2 };
+        if out.chars().count() + piece_len > 34 {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(n);
+        shown += 1;
+    }
+    match names.len() - shown {
+        0 => out,
+        rest => format!("{out}, +{rest}"),
+    }
 }
 
 fn dash(v: f64) -> String {
@@ -113,15 +162,16 @@ fn dash(v: f64) -> String {
     }
 }
 
-fn render_period(groups: &[&Group], label: &str, paint: &Paint) -> String {
+fn render_period(groups: &[&Group], label: &str, exact: bool, paint: &Paint) -> String {
     let rows: Vec<Vec<String>> = groups
         .iter()
         .map(|g| {
             vec![
                 g.key.clone(),
-                commas(g.input),
-                commas(g.output),
-                commas(g.cache),
+                models_cell(g),
+                tok(g.input, exact),
+                tok(g.output, exact),
+                tok(g.cache, exact),
                 dash(g.claude_cost),
                 dash(g.codex_cost),
                 cost(g.total()),
@@ -138,23 +188,24 @@ fn render_period(groups: &[&Group], label: &str, paint: &Paint) -> String {
     }
     let total = vec![
         "TOTAL".to_string(),
-        commas(ti),
-        commas(to),
-        commas(tc),
+        String::new(),
+        tok(ti, exact),
+        tok(to, exact),
+        tok(tc, exact),
         cost(tcl),
         cost(tco),
         cost(tcl + tco),
     ];
     render_table(
-        &[label, "Input", "Output", "Cache", "Claude", "Codex", "Total"],
+        &[label, "Models", "Input", "Output", "Cache", "Claude", "Codex", "Total"],
         &rows,
-        &['l', 'r', 'r', 'r', 'r', 'r', 'r'],
+        &['l', 'l', 'r', 'r', 'r', 'r', 'r', 'r'],
         Some(&total),
         paint,
     )
 }
 
-fn render_session(groups: &[&Group], all: bool, paint: &Paint) -> (String, Option<String>) {
+fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (String, Option<String>) {
     let shown: &[&Group] = if all || groups.len() <= 25 {
         groups
     } else {
@@ -188,7 +239,7 @@ fn render_session(groups: &[&Group], all: bool, paint: &Paint) -> (String, Optio
                     g.project.clone()
                 },
                 models,
-                commas(g.input + g.output + g.cache),
+                tok(g.input + g.output + g.cache, exact),
                 cost(g.total()),
             ]
         })
@@ -211,20 +262,20 @@ fn render_session(groups: &[&Group], all: bool, paint: &Paint) -> (String, Optio
     (table, note)
 }
 
-fn render_footer(f: &Footer, elapsed_ms: u128, file_count: usize, paint: &Paint) -> String {
+fn render_footer(f: &Footer, exact: bool, elapsed_ms: u128, file_count: usize, paint: &Paint) -> String {
     let mut lines = vec![
         String::new(),
         format!(
             "{}  {:>11}   {} tokens",
             paint.cyan("Claude"),
             cost(f.claude_cost),
-            commas(f.claude_tokens)
+            tok(f.claude_tokens, exact)
         ),
         format!(
             "{}  {:>11}   {} tokens",
             paint.green("Codex "),
             cost(f.codex_cost),
-            commas(f.codex_tokens)
+            tok(f.codex_tokens, exact)
         ),
         format!(
             "{}  {}",
@@ -235,7 +286,7 @@ fn render_footer(f: &Footer, elapsed_ms: u128, file_count: usize, paint: &Paint)
     if f.unpriced_tokens > 0 {
         lines.push(paint.yellow(&format!(
             "\n! {} tokens had no known pricing ({}); excluded from cost.",
-            commas(f.unpriced_tokens),
+            tok(f.unpriced_tokens, exact),
             f.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", ")
         )));
     }
@@ -339,7 +390,7 @@ fn run() -> i32 {
     let _ = writeln!(out, "{}", paint.dim("aiburn · Claude Code + Codex usage\n"));
     match o.command {
         Command::Session => {
-            let (table, note) = render_session(&groups, o.all, &paint);
+            let (table, note) = render_session(&groups, o.all, o.exact, &paint);
             let _ = writeln!(out, "{table}");
             if let Some(n) = note {
                 let _ = writeln!(out, "{}", paint.dim(&format!("\n{n}")));
@@ -347,10 +398,10 @@ fn run() -> i32 {
         }
         cmd => {
             let label = if cmd == Command::Monthly { "Month" } else { "Date" };
-            let _ = writeln!(out, "{}", render_period(&groups, label, &paint));
+            let _ = writeln!(out, "{}", render_period(&groups, label, o.exact, &paint));
         }
     }
-    let _ = writeln!(out, "{}", render_footer(&report.footer, elapsed, file_count, &paint));
+    let _ = writeln!(out, "{}", render_footer(&report.footer, o.exact, elapsed, file_count, &paint));
     0
 }
 
