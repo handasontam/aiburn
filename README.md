@@ -13,26 +13,27 @@ static binary with **sub-millisecond startup**; it **streams** the logs and
 $ aiburn
 aiburn · Claude Code + Codex usage
 
-Date        Models                 Input  Output  Cache   Claude  Codex    Total
-──────────  ─────────────────────  ─────  ──────  ─────  ───────  ─────  ───────
-2026-07-15  fable-5                1.54K    141K  12.9M   $33.88      –   $33.88
-2026-07-16  fable-5, opus-4-8      11.3K    348K  46.4M   $72.79      –   $72.79
-2026-07-17  fable-5, opus-4-8      2.67K    139K  26.6M   $33.02      –   $33.02
-2026-07-20  opus-4-8, gpt-5.6-sol  66.8K    224K  24.9M   $20.44  $0.64   $21.08
-──────────  ─────────────────────  ─────  ──────  ─────  ───────  ─────  ───────
-Date        Models                 Input  Output  Cache   Claude  Codex    Total
-TOTAL                              82.4K    916K   125M  $172.79  $0.64  $173.43
+Date        Agent   Models       Input  Output  Cache    Cost
+──────────  ──────  ───────────  ─────  ──────  ─────  ──────
+2026-07-20  claude  opus-4-8     2.81K    222K  24.4M  $20.44
+            codex   gpt-5.6-sol  64.0K   2.42K   500K   $0.64
+2026-07-21  claude  opus-4-8       127   84.8K  22.3M  $17.27
+──────────  ──────  ───────────  ─────  ──────  ─────  ──────
+Date        Agent   Models       Input  Output  Cache    Cost
+TOTAL                            66.9K    309K  47.2M  $38.35
 
-Claude      $172.79   126M tokens
+Claude       $37.71   47.0M tokens
 Codex         $0.64   567K tokens
-Total       $173.43
+Total        $38.35
 
-Scanned 1170 files in 288ms
+Scanned 1170 files in 397ms
 ```
 
-Token counts are compact (`K`/`M`/`B`/`T`) and costs exact; the column header
-repeats above the total so meanings stay on screen without scrolling. Use
-`--exact` for full token counts and `--json` for raw integers.
+Claude and Codex get their own row per day so each agent's tokens and cost are
+separate; the footer sums each agent. Token counts are compact (`K`/`M`/`B`/`T`)
+and costs exact; the column header repeats above the total so meanings stay on
+screen without scrolling. Use `--exact` for full token counts and `--json` for
+raw integers.
 
 ## Run it
 

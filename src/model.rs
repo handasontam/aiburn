@@ -1,5 +1,6 @@
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Agent {
+    #[default]
     Claude,
     Codex,
 }

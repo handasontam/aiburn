@@ -41,10 +41,21 @@ impl Query {
         true
     }
 
+    /// Unique key per group. Every group is scoped to a single agent so that
+    /// Claude and Codex get separate rows/totals.
     fn key(&self, r: &UsageRow) -> String {
         match self.command {
+            Command::Monthly => format!("{}|{}", r.month, r.agent.as_str()),
+            Command::Session => format!("{}|{}", r.agent.as_str(), r.session_id),
+            Command::Daily => format!("{}|{}", r.date, r.agent.as_str()),
+        }
+    }
+
+    /// Human-facing period label for the group (date / month / session id).
+    fn period(&self, r: &UsageRow) -> String {
+        match self.command {
             Command::Monthly => r.month.clone(),
-            Command::Session => format!("{}:{}", r.agent.as_str(), r.session_id),
+            Command::Session => r.session_id.clone(),
             Command::Daily => r.date.clone(),
         }
     }
@@ -53,21 +64,15 @@ impl Query {
 #[derive(Default)]
 pub struct Group {
     pub key: String,
-    pub claude_cost: f64,
-    pub codex_cost: f64,
+    pub period: String,
+    pub agent: Agent,
+    pub cost: f64,
     pub input: u64,
     pub output: u64,
     pub cache: u64,
     pub models: BTreeSet<String>,
-    pub agents: BTreeSet<&'static str>,
     pub project: String,
     pub last_ts: i64,
-}
-
-impl Group {
-    pub fn total(&self) -> f64 {
-        self.claude_cost + self.codex_cost
-    }
 }
 
 #[derive(Default)]
@@ -111,19 +116,17 @@ impl Report {
         let key = q.key(r);
         let g = self.groups.entry(key.clone()).or_insert_with(|| Group {
             key,
+            period: q.period(r),
+            agent: r.agent,
             ..Default::default()
         });
-        match r.agent {
-            Agent::Claude => g.claude_cost += r.cost,
-            Agent::Codex => g.codex_cost += r.cost,
-        }
+        g.cost += r.cost;
         g.input += r.tokens.input;
         g.output += r.tokens.output;
         g.cache += r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h;
         if !g.models.contains(&r.model) {
             g.models.insert(r.model.clone());
         }
-        g.agents.insert(r.agent.as_str());
         if g.project.is_empty() && !r.project.is_empty() {
             g.project = r.project.clone();
         }
@@ -145,15 +148,15 @@ impl Report {
         for (k, og) in other.groups {
             let g = self.groups.entry(k).or_insert_with(|| Group {
                 key: og.key.clone(),
+                period: og.period.clone(),
+                agent: og.agent,
                 ..Default::default()
             });
-            g.claude_cost += og.claude_cost;
-            g.codex_cost += og.codex_cost;
+            g.cost += og.cost;
             g.input += og.input;
             g.output += og.output;
             g.cache += og.cache;
             g.models.extend(og.models);
-            g.agents.extend(og.agents);
             if g.project.is_empty() {
                 g.project = og.project;
             }

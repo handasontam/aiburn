@@ -154,52 +154,48 @@ fn models_cell(g: &Group) -> String {
     }
 }
 
-fn dash(v: f64) -> String {
-    if v == 0.0 {
-        "–".to_string()
-    } else {
-        cost(v)
-    }
-}
-
 fn render_period(groups: &[&Group], label: &str, exact: bool, paint: &Paint) -> String {
-    let rows: Vec<Vec<String>> = groups
-        .iter()
-        .map(|g| {
-            vec![
-                g.key.clone(),
-                models_cell(g),
-                tok(g.input, exact),
-                tok(g.output, exact),
-                tok(g.cache, exact),
-                dash(g.claude_cost),
-                dash(g.codex_cost),
-                cost(g.total()),
-            ]
-        })
-        .collect();
-    let (mut ti, mut to, mut tc, mut tcl, mut tco) = (0u64, 0u64, 0u64, 0.0, 0.0);
+    // Groups are sorted by "period|agent", so rows for one period are adjacent;
+    // blank the repeated period label so each day/month reads as a small block.
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(groups.len());
+    let mut prev = "";
+    for g in groups {
+        let period_cell = if g.period == prev {
+            String::new()
+        } else {
+            g.period.clone()
+        };
+        prev = &g.period;
+        rows.push(vec![
+            period_cell,
+            g.agent.as_str().to_string(),
+            models_cell(g),
+            tok(g.input, exact),
+            tok(g.output, exact),
+            tok(g.cache, exact),
+            cost(g.cost),
+        ]);
+    }
+    let (mut ti, mut to, mut tc, mut tcost) = (0u64, 0u64, 0u64, 0.0);
     for g in groups {
         ti += g.input;
         to += g.output;
         tc += g.cache;
-        tcl += g.claude_cost;
-        tco += g.codex_cost;
+        tcost += g.cost;
     }
     let total = vec![
         "TOTAL".to_string(),
         String::new(),
+        String::new(),
         tok(ti, exact),
         tok(to, exact),
         tok(tc, exact),
-        cost(tcl),
-        cost(tco),
-        cost(tcl + tco),
+        cost(tcost),
     ];
     render_table(
-        &[label, "Models", "Input", "Output", "Cache", "Claude", "Codex", "Total"],
+        &[label, "Agent", "Models", "Input", "Output", "Cache", "Cost"],
         &rows,
-        &['l', 'l', 'r', 'r', 'r', 'r', 'r', 'r'],
+        &['l', 'l', 'l', 'r', 'r', 'r', 'r'],
         Some(&total),
         paint,
     )
@@ -232,7 +228,7 @@ fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (
             };
             vec![
                 last,
-                g.agents.iter().next().copied().unwrap_or("").to_string(),
+                g.agent.as_str().to_string(),
                 if g.project.is_empty() {
                     "–".to_string()
                 } else {
@@ -240,7 +236,7 @@ fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (
                 },
                 models,
                 tok(g.input + g.output + g.cache, exact),
-                cost(g.total()),
+                cost(g.cost),
             ]
         })
         .collect();
@@ -307,24 +303,21 @@ fn json_report(command: &str, groups: &[&Group]) -> String {
     let items: Vec<String> = groups
         .iter()
         .map(|g| {
-            let agents: Vec<String> = g.agents.iter().map(|s| s.to_string()).collect();
             let models: Vec<String> = g.models.iter().cloned().collect();
             let last = match g.last_ts {
                 0 => "null".to_string(),
                 ms => format!("\"{}\"", time::iso_from_ms(ms)),
             };
             format!(
-                "    {{\n      \"key\": \"{}\",\n      \"agents\": [{}],\n      \"project\": \"{}\",\n      \"models\": [{}],\n      \"input\": {},\n      \"output\": {},\n      \"cache\": {},\n      \"claudeCost\": {:.6},\n      \"codexCost\": {:.6},\n      \"totalCost\": {:.6},\n      \"lastActive\": {}\n    }}",
-                esc(&g.key),
-                arr(&agents),
+                "    {{\n      \"period\": \"{}\",\n      \"agent\": \"{}\",\n      \"project\": \"{}\",\n      \"models\": [{}],\n      \"input\": {},\n      \"output\": {},\n      \"cache\": {},\n      \"cost\": {:.6},\n      \"lastActive\": {}\n    }}",
+                esc(&g.period),
+                g.agent.as_str(),
                 esc(&g.project),
                 arr(&models),
                 g.input,
                 g.output,
                 g.cache,
-                g.claude_cost,
-                g.codex_cost,
-                g.total(),
+                g.cost,
                 last
             )
         })
