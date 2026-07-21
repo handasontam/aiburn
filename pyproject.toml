@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "aiburn"
+description = "Fast Claude Code + Codex usage and cost, from your local logs."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["claude", "claude-code", "codex", "usage", "cost", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Rust",
+    "Topic :: Utilities",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/handason/aiburn"
+
+# `bindings = "bin"` tells maturin this crate is a plain executable (no Python
+# module): it compiles the Rust binary and packages it into a per-platform
+# wheel that installs the `aiburn` command onto PATH. `uvx aiburn` fetches the
+# matching wheel and runs it — no Rust toolchain needed on the target machine.
+[tool.maturin]
+bindings = "bin"
+strip = true

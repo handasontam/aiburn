@@ -14,10 +14,10 @@ use agg::{Command, Footer, Group, Query, Report};
 use model::Agent;
 use util::{commas, cost, render_table, Paint};
 
-const HELP: &str = "aitally — fast Claude Code + Codex usage & cost
+const HELP: &str = "aiburn — fast Claude Code + Codex usage & cost
 
 Usage:
-  aitally [command] [options]
+  aiburn [command] [options]
 
 Commands:
   daily      Per-day usage and cost (default)
@@ -70,7 +70,7 @@ fn parse_args() -> Result<Options, i32> {
                     Some("claude") => Some(Agent::Claude),
                     Some("codex") => Some(Agent::Codex),
                     _ => {
-                        eprintln!("aitally: --agent expects claude|codex");
+                        eprintln!("aiburn: --agent expects claude|codex");
                         return Err(1);
                     }
                 };
@@ -92,7 +92,7 @@ fn parse_args() -> Result<Options, i32> {
                 return Err(0);
             }
             _ => {
-                eprintln!("aitally: unknown argument \"{a}\"\n\n{HELP}");
+                eprintln!("aiburn: unknown argument \"{a}\"\n\n{HELP}");
                 return Err(1);
             }
         }
@@ -336,7 +336,7 @@ fn run() -> i32 {
     }
 
     let paint = Paint::new(out.is_terminal() && std::env::var_os("NO_COLOR").is_none());
-    let _ = writeln!(out, "{}", paint.dim("aitally · Claude Code + Codex usage\n"));
+    let _ = writeln!(out, "{}", paint.dim("aiburn · Claude Code + Codex usage\n"));
     match o.command {
         Command::Session => {
             let (table, note) = render_session(&groups, o.all, &paint);

@@ -1,12 +1,12 @@
 [package]
-name = "aitally"
+name = "aiburn"
 version = "0.1.0"
 edition = "2021"
 description = "Fast Claude Code + Codex usage and cost, from your local logs."
 license = "MIT"
 
 [[bin]]
-name = "aitally"
+name = "aiburn"
 path = "src/main.rs"
 
 [dependencies]

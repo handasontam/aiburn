@@ -1,16 +1,17 @@
-# aitally
+# aiburn
 
-Fast, local usage & cost reporting for **Claude Code** and **Codex** — in one table.
+Fast, local usage & cost reporting for **Claude Code** and **Codex** — in one
+table. See how fast you're burning money on your coding agents.
 
 A deliberately small alternative to [ccusage](https://github.com/ccusage/ccusage),
 scoped to just the two agents I use. It reads your local session logs, prices
 them offline, and prints per-day / per-month / per-session cost. A single
-static binary with **sub-millisecond startup**; it **streams** the logs so
-memory stays flat even when they grow to tens of GB.
+static binary with **sub-millisecond startup**; it **streams** the logs and
+**aggregates incrementally**, so memory stays flat even as they grow to tens of GB.
 
 ```
-$ aitally
-aitally · Claude Code + Codex usage
+$ aiburn
+aiburn · Claude Code + Codex usage
 
 Date            Input     Output          Cache     Claude    Codex      Total
 ──────────  ─────────  ─────────  ─────────────  ─────────  ───────  ─────────
@@ -27,21 +28,34 @@ Total       $314.33
 Scanned 1166 files in 413ms
 ```
 
-## Install
+## Run it
 
-Requires a [Rust toolchain](https://rustup.rs). From the repo:
+Once published to PyPI (see [Releasing](#releasing)), no install is needed —
+[uv](https://docs.astral.sh/uv/) fetches the right prebuilt binary and runs it:
 
 ```sh
-cargo install --path .     # builds and installs `aitally` to ~/.cargo/bin
+uvx aiburn                 # ephemeral run (macOS / Linux, any arch)
+uvx aiburn monthly
 ```
 
-Then run `aitally` from anywhere. (Or `cargo build --release` and copy
-`target/release/aitally` onto your `PATH`.)
+To keep it around as a permanent command:
+
+```sh
+uv tool install aiburn     # then just `aiburn`
+```
+
+### From source
+
+With a [Rust toolchain](https://rustup.rs):
+
+```sh
+cargo install --git https://github.com/handason/aiburn
+```
 
 ## Usage
 
 ```
-aitally [command] [options]
+aiburn [command] [options]
 
 Commands:
   daily      Per-day usage and cost (default)
@@ -93,18 +107,38 @@ To add or correct a model, edit the `table()` in `src/pricing.rs`.
   totals ([`src/agg.rs`](src/agg.rs)) as it is parsed and then dropped. Peak
   memory scales with the number of *groups* (days / months / sessions), not the
   number of events, so it stays flat as Codex logs grow into the tens of GB.
-  Claude is deduplicated by `(message id, request id)` first — bounded by
-  message count, not raw log size.
 - **Field-scanning parser** — a tiny hand-rolled JSON scanner
   ([`src/json.rs`](src/json.rs)) reads only the few fields it needs and skips
   everything else (the large `content` blocks) without allocating.
-- **Parallel** — files are parsed across all cores with `rayon` (Codex via a
-  parallel reduce over per-file reports).
-- **Embedded pricing** — no network request, no config.
+- **Parallel** — files are parsed across all cores with `rayon`.
 - **No heavyweight deps** — `rayon` + `libc` only; dates via `libc::localtime_r`.
 
 Measured on ~1.5 GB of logs / ~2.9 B tokens (~1,166 files): cold ~1.2 s,
 warm ~0.25 s, ~80 MB peak RSS, sub-millisecond process startup, ~470 KB binary.
+
+## Releasing
+
+Publishing is what makes `uvx aiburn` work everywhere. Wheels (each carrying the
+compiled binary for one platform) are built and pushed to PyPI by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) on every `v*`
+tag, for macOS arm64/x86_64 and Linux x86_64/aarch64.
+
+First-time setup:
+
+1. Push this repo to `github.com/<you>/aiburn` and update the URL in
+   [`pyproject.toml`](pyproject.toml).
+2. On PyPI, add a **trusted publisher** for the project: owner `<you>`, repo
+   `aiburn`, workflow `release.yml`, environment `pypi`. (No API token needed.)
+
+Cut a release:
+
+```sh
+# bump version in Cargo.toml, then:
+git tag v0.1.0 && git push --tags
+```
+
+The workflow builds all wheels and publishes them; `uvx aiburn` picks up the
+new version automatically.
 
 ## License
 

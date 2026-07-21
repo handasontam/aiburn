@@ -1,3 +1,9 @@
 /target
+/dist
 *.log
 .DS_Store
+
+# Python / maturin build artifacts
+__pycache__/
+*.egg-info/
+.venv/
