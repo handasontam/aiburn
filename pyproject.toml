@@ -17,7 +17,7 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Repository = "https://github.com/handason/aiburn"
+Repository = "https://github.com/handasontam/aiburn"
 
 # `bindings = "bin"` tells maturin this crate is a plain executable (no Python
 # module): it compiles the Rust binary and packages it into a per-platform
