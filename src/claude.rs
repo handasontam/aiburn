@@ -25,6 +25,8 @@ struct Extract {
     cache_5m: u64,
     cache_1h: u64,
     cache_read: u64,
+    /// `usage.speed`: "standard" or "fast" (absent on older logs).
+    speed: Option<String>,
     has_usage: bool,
 }
 
@@ -39,6 +41,7 @@ fn parse_usage(p: &mut P, e: &mut Extract) {
             "output_tokens" => e.output = p.u64().unwrap_or(0),
             "cache_creation_input_tokens" => e.cache_creation_flat = p.u64().unwrap_or(0),
             "cache_read_input_tokens" => e.cache_read = p.u64().unwrap_or(0),
+            "speed" => e.speed = p.str_opt(),
             "cache_creation" => {
                 if p.enter_obj() {
                     while let Some(kk) = p.obj_next() {
@@ -152,6 +155,14 @@ fn parse_file(path: &Path) -> Parsed {
             Some(m) if m != "<synthetic>" => m,
             _ => return,
         };
+        // Fast mode is the same model billed at a premium ($10/$50 per MTok on
+        // Opus 5). Anthropic names those builds `<model>-fast`, so fold the
+        // usage's `speed` into the name: it prices correctly and the premium
+        // is visible as its own row instead of inflating the standard one.
+        let model = match e.speed.as_deref() {
+            Some("fast") if !model.ends_with("-fast") => format!("{model}-fast"),
+            _ => model,
+        };
         let Some(ts) = e.timestamp else { return };
         let Some((ts_ms, date, month)) = parse_ts(&ts) else {
             return;
@@ -171,7 +182,7 @@ fn parse_file(path: &Path) -> Parsed {
             cache_write_1h: cw1h,
             cache_read: e.cache_read,
         };
-        let (cost, priced) = cost_for(&model, &tokens);
+        let (cost, priced) = cost_for(&model, &tokens, ts_ms);
         let row = UsageRow {
             agent: Agent::Claude,
             timestamp: ts_ms,

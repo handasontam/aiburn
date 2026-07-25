@@ -187,7 +187,7 @@ fn build_report(path: &Path, q: &Query) -> Report {
             cache_read: cached,
         };
         let m = model.clone().unwrap_or_else(|| "unknown".to_string());
-        let (cost, priced) = cost_for(&m, &tokens);
+        let (cost, priced) = cost_for(&m, &tokens, ts_ms);
         report.add(
             q,
             &UsageRow {

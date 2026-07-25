@@ -9,9 +9,9 @@ aiburn · Claude Code + Codex usage
 
 Date        Agent   Models       Input  Output  Cache    Cost
 ──────────  ──────  ───────────  ─────  ──────  ─────  ──────
-2026-07-20  claude  opus-4-8     2.81K    222K  24.4M  $20.44
+2026-07-20  claude  opus-5       2.81K    222K  24.4M  $20.44
             codex   gpt-5.6-sol  64.0K   2.42K   500K   $0.64
-2026-07-21  claude  opus-4-8       127   84.8K  22.3M  $17.27
+2026-07-21  claude  opus-5         127   84.8K  22.3M  $17.27
 ──────────  ──────  ───────────  ─────  ──────  ─────  ──────
 Date        Agent   Models       Input  Output  Cache    Cost
 TOTAL                            66.9K    309K  47.2M  $38.35
@@ -97,6 +97,14 @@ Costs are recomputed from token counts with a built-in pricing table (from
 LiteLLM / models.dev), including Claude's 5-minute and 1-hour cache tiers.
 Claude totals track ccusage within ~0.3%. Codex is approximate (~1–2%): its
 logs carry no authoritative cost, so standard-tier pricing is assumed.
+
+Two details worth knowing:
+
+- **Fast mode** costs more per token, so it's priced and shown separately —
+  look for an `opus-5-fast` row alongside the standard `opus-5` one.
+- **Launch discounts are applied by date.** Sonnet 5's introductory rate runs
+  through 2026-08-31; days before that stay priced at the discount once it
+  expires, so your history doesn't silently get more expensive.
 
 ## Acknowledgements
 
