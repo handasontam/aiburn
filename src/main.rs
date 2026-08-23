@@ -155,20 +155,28 @@ fn models_cell(g: &Group) -> String {
 }
 
 fn render_period(groups: &[&Group], label: &str, exact: bool, paint: &Paint) -> String {
-    // Groups are sorted by "period|agent", so rows for one period are adjacent;
-    // blank the repeated period label so each day/month reads as a small block.
+    // Groups are sorted by "period|agent|model", so rows for one period are
+    // adjacent; blank repeated period and agent labels within each block.
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(groups.len());
-    let mut prev = "";
+    let mut prev_period = "";
+    let mut prev_agent = None;
     for g in groups {
-        let period_cell = if g.period == prev {
+        let same_period = g.period == prev_period;
+        let period_cell = if same_period {
             String::new()
         } else {
             g.period.clone()
         };
-        prev = &g.period;
+        let agent_cell = if same_period && prev_agent == Some(g.agent) {
+            String::new()
+        } else {
+            g.agent.as_str().to_string()
+        };
+        prev_period = &g.period;
+        prev_agent = Some(g.agent);
         rows.push(vec![
             period_cell,
-            g.agent.as_str().to_string(),
+            agent_cell,
             models_cell(g),
             tok(g.input, exact),
             tok(g.output, exact),

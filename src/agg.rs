@@ -42,12 +42,13 @@ impl Query {
     }
 
     /// Unique key per group. Every group is scoped to a single agent so that
-    /// Claude and Codex get separate rows/totals.
+    /// Claude and Codex get separate rows/totals, and each raw model gets its
+    /// own row within a period or session.
     fn key(&self, r: &UsageRow) -> String {
         match self.command {
-            Command::Monthly => format!("{}|{}", r.month, r.agent.as_str()),
-            Command::Session => format!("{}|{}", r.agent.as_str(), r.session_id),
-            Command::Daily => format!("{}|{}", r.date, r.agent.as_str()),
+            Command::Monthly => format!("{}|{}|{}", r.month, r.agent.as_str(), r.model),
+            Command::Session => format!("{}|{}|{}", r.agent.as_str(), r.session_id, r.model),
+            Command::Daily => format!("{}|{}|{}", r.date, r.agent.as_str(), r.model),
         }
     }
 

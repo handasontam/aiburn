@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::model::Tokens;
+use crate::model::{ServiceTier, Tokens};
 
 /// Rates in USD per 1,000,000 tokens.
 pub struct Rate {
@@ -33,9 +33,9 @@ fn o(input: f64, output: f64, cache_read: f64) -> Rate {
     }
 }
 
-/// Curated pricing for the models Claude Code and Codex actually emit.
-/// Sourced from LiteLLM / models.dev (2026-07). See `resolve_key` for how a
-/// logged model name is matched against these keys.
+/// Curated public list pricing for the models Claude Code and Codex actually
+/// emit. OpenAI's Codex Fast rates are per-model rather than a blanket 2×
+/// multiplier; see `fast_rate` below. See `resolve_key` for model matching.
 fn table() -> &'static Vec<(&'static str, Rate)> {
     static T: OnceLock<Vec<(&'static str, Rate)>> = OnceLock::new();
     T.get_or_init(|| {
@@ -51,7 +51,7 @@ fn table() -> &'static Vec<(&'static str, Rate)> {
             ("claude-opus-4-1", c(15.0, 75.0)),
             ("claude-opus-4", c(15.0, 75.0)),
             ("claude-fable-5", c(10.0, 50.0)),
-            ("claude-sonnet-5", c(3.0, 15.0)), // launch rate until 2026-09-01; see `intro`
+            ("claude-sonnet-5", c(2.0, 10.0)),
             ("claude-sonnet-4-6", c(3.0, 15.0)),
             ("claude-sonnet-4-5", c(3.0, 15.0)),
             ("claude-sonnet-4", c(3.0, 15.0)),
@@ -61,6 +61,12 @@ fn table() -> &'static Vec<(&'static str, Rate)> {
             ("claude-3-opus", c(15.0, 75.0)),
             ("claude-3-haiku", c(0.25, 1.25)),
             // --- OpenAI / Codex ---
+            // OpenAI GPT-5.6 family: Sol, Terra, and Luna have distinct
+            // standard rates. Keep the bare name for older logs that omit
+            // the capability suffix; it follows the flagship Sol rate.
+            ("gpt-5.6-sol", o(5.0, 30.0, 0.5)),
+            ("gpt-5.6-terra", o(2.0, 12.0, 0.2)),
+            ("gpt-5.6-luna", o(0.2, 1.2, 0.02)),
             ("gpt-5.6", o(5.0, 30.0, 0.5)),
             ("gpt-5.5", o(5.0, 30.0, 0.5)),
             ("gpt-5.4", o(2.5, 15.0, 0.25)),
@@ -84,35 +90,64 @@ fn table() -> &'static Vec<(&'static str, Rate)> {
     })
 }
 
-/// Promotional rates that expire, as (key, epoch-ms the promo ends, rate).
-/// Checked before `table` and only for usage stamped *before* the cutoff, so
-/// past days keep the price that actually applied on the day they ran.
+/// OpenAI Fast/Priority pricing, in USD per 1,000,000 tokens.
 ///
-/// Sonnet 5 launched at $2/$10; it goes to its standard $3/$15 on 2026-09-01
-/// (cutoff taken as UTC midnight — Anthropic doesn't publish a zone).
-fn intro() -> &'static Vec<(&'static str, i64, Rate)> {
-    static T: OnceLock<Vec<(&'static str, i64, Rate)>> = OnceLock::new();
-    T.get_or_init(|| vec![("claude-sonnet-5", 1_788_220_800_000, c(2.0, 10.0))])
+/// These are the published GPT-5.6 Fast rates. A known model without a
+/// separate Fast rate falls back to its Standard rate rather than silently
+/// becoming unpriced.
+fn fast_rate(key: &str) -> Option<&'static Rate> {
+    static SOL: Rate = Rate {
+        input: 8.0,
+        output: 40.0,
+        cache_write: 0.0,
+        cache_write_1h: 0.0,
+        cache_read: 0.8,
+    };
+    static TERRA: Rate = Rate {
+        input: 4.0,
+        output: 24.0,
+        cache_write: 0.0,
+        cache_write_1h: 0.0,
+        cache_read: 0.4,
+    };
+    static LUNA: Rate = Rate {
+        input: 0.4,
+        output: 2.4,
+        cache_write: 0.0,
+        cache_write_1h: 0.0,
+        cache_read: 0.04,
+    };
+
+    match key {
+        "gpt-5.6-sol" | "gpt-5.6" | "gpt-5.5" => Some(&SOL),
+        "gpt-5.6-terra" => Some(&TERRA),
+        "gpt-5.6-luna" => Some(&LUNA),
+        _ => None,
+    }
 }
 
+const AUTO_REVIEW_LUNA_AT_MS: i64 = 1_785_369_600_000; // 2026-07-30T00:00:00Z
+
 /// Bare aliases and virtual model names → a concrete pricing key.
-fn alias(model: &str) -> Option<&'static str> {
+fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
     match model {
         "opus" => Some("claude-opus-5"),
         "sonnet" => Some("claude-sonnet-5"),
         "haiku" => Some("claude-haiku-4-5"),
-        // Codex review sub-agent runs on the current flagship model.
+        // The raw name is retained in reports, but its underlying model
+        // changed from GPT-5.5 to GPT-5.6-Luna on the public cutover date.
+        "codex-auto-review" if at_ms >= AUTO_REVIEW_LUNA_AT_MS => Some("gpt-5.6-luna"),
         "codex-auto-review" => Some("gpt-5.5"),
         _ => None,
     }
 }
 
-fn lookup(key: &str) -> Option<&'static str> {
+fn lookup(key: &str, at_ms: i64) -> Option<&'static str> {
     let t = table();
     if let Some((k, _)) = t.iter().find(|(k, _)| *k == key) {
         return Some(k);
     }
-    if let Some(target) = alias(key) {
+    if let Some(target) = alias(key, at_ms) {
         if let Some((k, _)) = t.iter().find(|(k, _)| *k == target) {
             return Some(k);
         }
@@ -128,23 +163,24 @@ fn lookup(key: &str) -> Option<&'static str> {
 /// longest prefix (so dated/regional variants resolve to their base). A
 /// `-fast` build we have no premium rate for retries as its base model, which
 /// undercounts rather than dropping the row to $0.
-fn resolve_key(model: &str) -> Option<&'static str> {
+fn resolve_key(model: &str, at_ms: i64) -> Option<&'static str> {
     let key = model.to_ascii_lowercase();
-    lookup(&key).or_else(|| lookup(key.strip_suffix("-fast")?))
+    lookup(&key, at_ms).or_else(|| lookup(key.strip_suffix("-fast")?, at_ms))
 }
 
-fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
-    let key = resolve_key(model)?;
-    if let Some((_, _, r)) = intro().iter().find(|(k, until, _)| *k == key && at_ms < *until) {
-        return Some(r);
+fn resolve(model: &str, at_ms: i64, service_tier: ServiceTier) -> Option<&'static Rate> {
+    let key = resolve_key(model, at_ms)?;
+    let standard = table().iter().find(|(k, _)| *k == key).map(|(_, r)| r)?;
+    if service_tier == ServiceTier::Fast {
+        return Some(fast_rate(key).unwrap_or(standard));
     }
-    table().iter().find(|(k, _)| *k == key).map(|(_, r)| r)
+    Some(standard)
 }
 
 /// Returns (cost in USD, whether pricing was found). `at_ms` is when the usage
-/// happened, so rows priced under an expired promo stay historically correct.
-pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> (f64, bool) {
-    match resolve(model, at_ms) {
+/// happened so date-based model aliases remain historically reproducible.
+pub fn cost_for(model: &str, t: &Tokens, at_ms: i64, service_tier: ServiceTier) -> (f64, bool) {
+    match resolve(model, at_ms, service_tier) {
         None => (0.0, false),
         Some(r) => {
             let usd = (t.input as f64 * r.input
@@ -155,5 +191,41 @@ pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> (f64, bool) {
                 / 1_000_000.0;
             (usd, true)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_each() -> Tokens {
+        Tokens {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn capability_models_use_distinct_standard_rates() {
+        let t = one_each();
+        assert_eq!(cost_for("gpt-5.6-sol", &t, 0, ServiceTier::Standard), (35.5, true));
+        assert_eq!(cost_for("gpt-5.6-terra", &t, 0, ServiceTier::Standard), (14.2, true));
+        assert_eq!(cost_for("gpt-5.6-luna", &t, 0, ServiceTier::Standard), (1.42, true));
+    }
+
+    #[test]
+    fn fast_rates_are_model_specific() {
+        let t = one_each();
+        assert_eq!(cost_for("gpt-5.6-sol", &t, 0, ServiceTier::Fast), (48.8, true));
+        assert_eq!(cost_for("gpt-5.6-luna", &t, 0, ServiceTier::Fast), (2.84, true));
+    }
+
+    #[test]
+    fn auto_review_switches_to_luna_on_cutover() {
+        let t = one_each();
+        assert_eq!(cost_for("codex-auto-review", &t, AUTO_REVIEW_LUNA_AT_MS - 1, ServiceTier::Standard), (35.5, true));
+        assert_eq!(cost_for("codex-auto-review", &t, AUTO_REVIEW_LUNA_AT_MS, ServiceTier::Standard), (1.42, true));
     }
 }

@@ -14,6 +14,23 @@ impl Agent {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServiceTier {
+    #[default]
+    Standard,
+    Fast,
+}
+
+impl ServiceTier {
+    /// Codex calls the premium tier both `fast` and `priority`.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "fast" | "priority" => ServiceTier::Fast,
+            _ => ServiceTier::Standard,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Tokens {
     /// Non-cached input tokens (billed at input rate).

@@ -21,22 +21,23 @@ Codex         $0.64   567K tokens
 Total        $38.35
 ```
 
-Claude and Codex each get their own row so their tokens and cost stay separate.
+Each raw model gets its own row, with repeated date and agent labels suppressed
+so model-level comparisons stay readable.
 Token counts are compact (`K`/`M`/`B`/`T`) and costs exact — pass `--exact` for
 full counts, or `--json` for raw integers.
 
 ## Why aiburn
 
-- **Fully local & private** — it only reads the log files your agents already
-  write on your machine. No network calls, no account, no config; nothing about
-  your usage ever leaves your computer.
+- **Fully local & private** — it only reads the log files and local Codex config
+  your agents already write on your machine. No network calls or account;
+  nothing about your usage ever leaves your computer.
 - **One command, no install** — `uvx aiburn` on macOS or Linux.
 - **Both agents, one view** — Claude Code and Codex side by side, by day, month,
   or session.
 - **Fast at any size** — scans gigabytes of history in well under a second, with
   near-instant startup, so it stays snappy as your logs grow.
-- **Accurate cost** — recomputed from token counts (including cache tiers), and
-  kept close to ccusage's numbers.
+- **Accurate cost** — recomputed from token counts (including cache tiers), with
+  date-aware model aliases and Codex Standard/Fast/Priority pricing.
 
 ## Run it
 
@@ -93,18 +94,21 @@ Only your local coding-agent logs — read in place, never sent anywhere:
 
 ## Cost accuracy
 
-Costs are recomputed from token counts with a built-in pricing table (from
-LiteLLM / models.dev), including Claude's 5-minute and 1-hour cache tiers.
-Claude totals track ccusage within ~0.3%. Codex is approximate (~1–2%): its
-logs carry no authoritative cost, so standard-tier pricing is assumed.
+Costs are recomputed from token counts with a built-in, pinned public pricing
+table, including Claude's 5-minute and 1-hour cache tiers. Claude totals track
+ccusage within ~0.3%. Codex logs carry no authoritative cost, so aiburn uses
+public list pricing: explicit `priority`/`fast` events use the matching Fast
+rate, missing tiers follow the top-level Codex config, and unknown tiers fall
+back to Standard.
 
 Two details worth knowing:
 
-- **Fast mode** costs more per token, so it's priced and shown separately —
-  look for an `opus-5-fast` row alongside the standard `opus-5` one.
-- **Launch discounts are applied by date.** Sonnet 5's introductory rate runs
-  through 2026-08-31; days before that stay priced at the discount once it
-  expires, so your history doesn't silently get more expensive.
+- **Fast mode** costs more per token. Claude's fast model names are shown
+  separately; Codex Fast/Priority usage keeps its raw model name and uses the
+  premium rate in its cost.
+- **Codex replay history is skipped.** Multi-agent rollouts can contain a
+  parent session's token events before their first `turn_context`; those tokens
+  belong to the parent and are not charged again.
 
 ## Acknowledgements
 
