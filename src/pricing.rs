@@ -12,7 +12,7 @@ pub struct Rate {
 }
 
 /// Anthropic: 5m cache write = 1.25× input, 1h = 2× input, cache read = 0.1×.
-fn c(input: f64, output: f64) -> Rate {
+const fn c(input: f64, output: f64) -> Rate {
     Rate {
         input,
         output,
@@ -23,7 +23,7 @@ fn c(input: f64, output: f64) -> Rate {
 }
 
 /// OpenAI: no separate cache-write; cached input has its own rate.
-fn o(input: f64, output: f64, cache_read: f64) -> Rate {
+const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
@@ -96,27 +96,9 @@ fn table() -> &'static Vec<(&'static str, Rate)> {
 /// separate Fast rate falls back to its Standard rate rather than silently
 /// becoming unpriced.
 fn fast_rate(key: &str) -> Option<&'static Rate> {
-    static SOL: Rate = Rate {
-        input: 8.0,
-        output: 40.0,
-        cache_write: 0.0,
-        cache_write_1h: 0.0,
-        cache_read: 0.8,
-    };
-    static TERRA: Rate = Rate {
-        input: 4.0,
-        output: 24.0,
-        cache_write: 0.0,
-        cache_write_1h: 0.0,
-        cache_read: 0.4,
-    };
-    static LUNA: Rate = Rate {
-        input: 0.4,
-        output: 2.4,
-        cache_write: 0.0,
-        cache_write_1h: 0.0,
-        cache_read: 0.04,
-    };
+    static SOL: Rate = o(8.0, 40.0, 0.8);
+    static TERRA: Rate = o(4.0, 24.0, 0.4);
+    static LUNA: Rate = o(0.4, 2.4, 0.04);
 
     match key {
         "gpt-5.6-sol" | "gpt-5.6" | "gpt-5.5" => Some(&SOL),
@@ -142,35 +124,30 @@ fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
     }
 }
 
-fn lookup(key: &str, at_ms: i64) -> Option<&'static str> {
+fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
     let t = table();
-    if let Some((k, _)) = t.iter().find(|(k, _)| *k == key) {
-        return Some(k);
+    let find = |key: &str| t.iter().find(|(k, _)| *k == key).map(|(k, r)| (*k, r));
+    if let Some(hit) = find(key) {
+        return Some(hit);
     }
-    if let Some(target) = alias(key, at_ms) {
-        if let Some((k, _)) = t.iter().find(|(k, _)| *k == target) {
-            return Some(k);
-        }
+    if let Some(hit) = alias(key, at_ms).and_then(find) {
+        return Some(hit);
     }
     // longest matching prefix (handles dated/regional suffixes)
     t.iter()
         .filter(|(k, _)| key.starts_with(*k))
         .max_by_key(|(k, _)| k.len())
-        .map(|(k, _)| *k)
+        .map(|(k, r)| (*k, r))
 }
 
-/// Match a logged model name to a pricing key: exact, then bare alias, then
+/// Match a logged model name to its rate: exact, then bare alias, then
 /// longest prefix (so dated/regional variants resolve to their base). A
 /// `-fast` build we have no premium rate for retries as its base model, which
 /// undercounts rather than dropping the row to $0.
-fn resolve_key(model: &str, at_ms: i64) -> Option<&'static str> {
-    let key = model.to_ascii_lowercase();
-    lookup(&key, at_ms).or_else(|| lookup(key.strip_suffix("-fast")?, at_ms))
-}
-
 fn resolve(model: &str, at_ms: i64, service_tier: ServiceTier) -> Option<&'static Rate> {
-    let key = resolve_key(model, at_ms)?;
-    let standard = table().iter().find(|(k, _)| *k == key).map(|(_, r)| r)?;
+    let key = model.to_ascii_lowercase();
+    let (key, standard) =
+        lookup(&key, at_ms).or_else(|| lookup(key.strip_suffix("-fast")?, at_ms))?;
     if service_tier == ServiceTier::Fast {
         return Some(fast_rate(key).unwrap_or(standard));
     }

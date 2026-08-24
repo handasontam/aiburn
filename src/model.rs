@@ -14,7 +14,7 @@ impl Agent {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum ServiceTier {
     #[default]
     Standard,

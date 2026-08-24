@@ -11,7 +11,7 @@ use crate::pricing::cost_for;
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 struct RawUsage {
     input: u64,
     cached: u64,
@@ -90,24 +90,27 @@ fn parse_payload(p: &mut P, e: &mut Extract) {
     }
 }
 
+/// Codex base directory: `$CODEX_HOME`, default `~/.codex`.
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home().map(|h| h.join(".codex")))
+}
+
 /// Match ccusage's fallback for older Codex events that have no explicit
 /// service tier: use the top-level `service_tier` from config.toml, otherwise
 /// Standard. A missing/unknown value is deliberately conservative.
 fn configured_service_tier() -> ServiceTier {
-    let base = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home().map(|h| h.join(".codex")));
-    let Some(base) = base else {
-        return ServiceTier::Standard;
-    };
-    let Ok(config) = fs::read_to_string(base.join("config.toml")) else {
-        return ServiceTier::Standard;
-    };
+    codex_home()
+        .and_then(|base| fs::read_to_string(base.join("config.toml")).ok())
+        .map_or(ServiceTier::Standard, |c| service_tier_from_config(&c))
+}
 
+fn service_tier_from_config(config: &str) -> ServiceTier {
     for line in config.lines() {
-        let line = line.trim();
-        if line.starts_with('[') || line.starts_with('#') {
-            continue;
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            break; // keys below the first section header are not top-level
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -138,10 +141,7 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
 
 /// Existing Codex session directories to scan.
 pub fn codex_dirs() -> Vec<PathBuf> {
-    let base = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home().map(|h| h.join(".codex")));
-    match base {
+    match codex_home() {
         Some(b) => [b.join("sessions"), b.join("archived_sessions")]
             .into_iter()
             .filter(|p| p.is_dir())
@@ -171,11 +171,13 @@ fn uuid_from_name(path: &Path) -> Option<String> {
 }
 
 /// Convert a cumulative token snapshot into the usage since the previous
-/// snapshot. A lower value means the session reset its counters.
+/// snapshot. When every counter is lower the session reset and the new
+/// snapshot counts whole; a dip in only some fields is treated as noise and
+/// clamped to zero rather than re-counting the whole session.
 fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     match prev {
         None => cur,
-        Some(p) if cur.input < p.input || cur.cached < p.cached || cur.output < p.output => cur,
+        Some(p) if cur.input < p.input && cur.cached < p.cached && cur.output < p.output => cur,
         Some(p) => RawUsage {
             input: cur.input.saturating_sub(p.input),
             cached: cur.cached.saturating_sub(p.cached),
@@ -184,32 +186,41 @@ fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     }
 }
 
-fn build_report(path: &Path, q: &Query) -> Report {
+/// Longest pause tolerated inside a forked rollout's replayed history. Codex
+/// rewrites the replay to the fork instant and writes it as one dense burst
+/// (tens of milliseconds), while the child's own first turn follows a real
+/// pause of seconds; ccusage's fallback uses the same gap heuristic.
+const REPLAY_BURST_GAP_MS: i64 = 1_000;
+
+fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
     let session_id = uuid_from_name(path).unwrap_or_else(|| file_stem(path));
 
     let mut model: Option<String> = None;
-    let mut service_tier = configured_service_tier();
+    let mut service_tier = fallback_tier;
     let mut seen_turn_context = false;
     let mut forked = false;
-    let mut first_token_second: Option<String> = None;
+    let mut replay_last_ms: Option<i64> = None;
+    let mut replay_done = false;
+    let mut first_line = true;
     let mut project = String::new();
     let mut prev_total: Option<RawUsage> = None;
     let mut report = Report::default();
 
     for_each_line(path, |line| {
-        let is_turn = contains(line, b"\"turn_context\"");
-        let is_tok = contains(line, b"\"token_count\"");
-        let is_settings = contains(line, b"\"thread_settings_applied\"");
-        let is_meta = contains(line, b"\"session_meta\"");
-        if !is_turn && !is_tok && !is_settings && !is_meta {
+        // session_meta is the rollout's opening record; only there can the
+        // fork marker appear, so no other line pays for that needle.
+        if std::mem::take(&mut first_line) && contains(line, b"\"session_meta\"") {
+            forked = parse_line(line).is_some_and(|e| e.forked_from_id.is_some());
+            return;
+        }
+        if !contains(line, b"\"token_count\"")
+            && !contains(line, b"\"turn_context\"")
+            && !contains(line, b"\"thread_settings_applied\"")
+        {
             return;
         }
         let Some(e) = parse_line(line) else { return };
 
-        if e.typ.as_deref() == Some("session_meta") {
-            forked |= e.forked_from_id.is_some();
-            return;
-        }
         if e.typ.as_deref() == Some("turn_context") {
             seen_turn_context = true;
             if let Some(m) = e.model {
@@ -232,21 +243,23 @@ fn build_report(path: &Path, q: &Query) -> Report {
             return;
         }
         let Some(ts) = e.timestamp else { return };
+        let Some((ts_ms, date, month)) = parse_ts(&ts) else {
+            return;
+        };
 
-        // Current forked rollouts begin with a parent-history replay whose
-        // token events share the child's creation second. Keep the final
-        // inherited cumulative snapshot as the child's baseline.
-        if forked {
-            let second = ts.get(..19).unwrap_or(&ts).to_string();
-            match &first_token_second {
-                None => first_token_second = Some(second),
-                Some(first) if first == &second => {
+        // Forked rollouts open with a replay of the parent's history. Absorb
+        // the burst — first event included — as the child's baseline; the
+        // first gap longer than REPLAY_BURST_GAP_MS is the child's own turn.
+        if forked && !replay_done {
+            match replay_last_ms {
+                Some(prev) if ts_ms - prev > REPLAY_BURST_GAP_MS => replay_done = true,
+                _ => {
+                    replay_last_ms = Some(ts_ms);
                     if let Some(total) = e.total {
                         prev_total = Some(total);
                     }
                     return;
                 }
-                Some(_) => {}
             }
         }
 
@@ -277,9 +290,6 @@ fn build_report(path: &Path, q: &Query) -> Report {
         if last.input == 0 && cached == 0 && last.output == 0 {
             return;
         }
-        let Some((ts_ms, date, month)) = parse_ts(&ts) else {
-            return;
-        };
 
         let tokens = Tokens {
             input: last.input - cached,
@@ -325,12 +335,60 @@ pub fn load(files: &[PathBuf], q: &Query) -> Report {
         })
         .collect();
 
+    let fallback_tier = configured_service_tier();
     deduped
         .into_par_iter()
-        .map(|f| build_report(f, q))
+        .map(|f| build_report(f, q, fallback_tier))
         .reduce(Report::default, Report::merged)
 }
 
 pub fn files() -> Vec<PathBuf> {
     codex_dirs().iter().flat_map(|d| find_jsonl(d)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_tier_reads_top_level_key() {
+        assert_eq!(service_tier_from_config("service_tier = \"fast\""), ServiceTier::Fast);
+        assert_eq!(service_tier_from_config("service_tier = 'priority'"), ServiceTier::Fast);
+        assert_eq!(service_tier_from_config("service_tier = \"default\""), ServiceTier::Standard);
+        assert_eq!(service_tier_from_config("model = \"gpt-5.6\""), ServiceTier::Standard);
+    }
+
+    #[test]
+    fn config_tier_strips_inline_comments() {
+        assert_eq!(
+            service_tier_from_config("service_tier = \"fast\"  # premium"),
+            ServiceTier::Fast
+        );
+    }
+
+    #[test]
+    fn config_tier_ignores_sectioned_keys() {
+        assert_eq!(
+            service_tier_from_config("[profiles.speedy]\nservice_tier = \"fast\""),
+            ServiceTier::Standard
+        );
+    }
+
+    fn raw(input: u64, cached: u64, output: u64) -> RawUsage {
+        RawUsage { input, cached, output }
+    }
+
+    #[test]
+    fn delta_counts_full_reset_whole() {
+        let prev = raw(6_892_162, 6_111_360, 49_657);
+        let cur = raw(83_569, 0, 1_328);
+        assert_eq!(delta(cur, Some(prev)), cur);
+    }
+
+    #[test]
+    fn delta_clamps_partial_dip_instead_of_recounting() {
+        let prev = raw(900_000, 800_000, 100_000);
+        let cur = raw(1_000_000, 750_000, 120_000);
+        assert_eq!(delta(cur, Some(prev)), raw(100_000, 0, 20_000));
+    }
 }
