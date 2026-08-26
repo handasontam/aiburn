@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use crate::agg::{Query, Report};
 use crate::json::{contains, P};
-use crate::model::{Agent, ServiceTier, Tokens, UsageRow};
+use crate::model::{Agent, Tokens, UsageRow};
 use crate::pricing::cost_for;
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
@@ -182,7 +182,7 @@ fn parse_file(path: &Path) -> Parsed {
             cache_write_1h: cw1h,
             cache_read: e.cache_read,
         };
-        let (cost, priced) = cost_for(&model, &tokens, ts_ms, ServiceTier::Standard);
+        let (cost, priced) = cost_for(&model, &tokens, ts_ms);
         let row = UsageRow {
             agent: Agent::Claude,
             timestamp: ts_ms,

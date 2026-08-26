@@ -218,17 +218,7 @@ fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (
     let rows: Vec<Vec<String>> = shown
         .iter()
         .map(|g| {
-            let models = g
-                .models
-                .iter()
-                .map(|m| short_model(m))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let models = if models.chars().count() > 26 {
-                format!("{}…", models.chars().take(25).collect::<String>())
-            } else {
-                models
-            };
+            let models = models_cell(g);
             let last = if g.last_ts > 0 {
                 time::iso_from_ms(g.last_ts)[..10].to_string()
             } else {

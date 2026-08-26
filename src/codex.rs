@@ -26,7 +26,6 @@ struct Extract {
     model: Option<String>,
     cwd: Option<String>,
     service_tier: Option<String>,
-    forked_from_id: Option<String>,
     total: Option<RawUsage>,
     last: Option<RawUsage>,
 }
@@ -81,8 +80,6 @@ fn parse_payload(p: &mut P, e: &mut Extract) {
             "type" => e.payload_type = p.str_opt(),
             "model" => e.model = p.str_opt(),
             "cwd" => e.cwd = p.str_opt(),
-            "service_tier" => e.service_tier = p.str_opt(),
-            "forked_from_id" => e.forked_from_id = p.str_opt(),
             "thread_settings" => parse_thread_settings(p, e),
             "info" => parse_info(p, e),
             _ => p.skip(),
@@ -97,9 +94,12 @@ fn codex_home() -> Option<PathBuf> {
         .or_else(|| home().map(|h| h.join(".codex")))
 }
 
-/// Match ccusage's fallback for older Codex events that have no explicit
-/// service tier: use the top-level `service_tier` from config.toml, otherwise
-/// Standard. A missing/unknown value is deliberately conservative.
+/// Fallback tier for events that never recorded one: the top-level
+/// `service_tier` from config.toml, otherwise Standard. `[profiles.*]` tiers
+/// are deliberately ignored (the log doesn't say which profile was active;
+/// ccusage scans them too and can over-price inactive profiles). Note this
+/// reads today's config, so re-tiering it re-prices old events that carry no
+/// explicit tier of their own.
 fn configured_service_tier() -> ServiceTier {
     codex_home()
         .and_then(|base| fs::read_to_string(base.join("config.toml")).ok())
@@ -170,14 +170,10 @@ fn uuid_from_name(path: &Path) -> Option<String> {
     None
 }
 
-/// Convert a cumulative token snapshot into the usage since the previous
-/// snapshot. When every counter is lower the session reset and the new
-/// snapshot counts whole; a dip in only some fields is treated as noise and
-/// clamped to zero rather than re-counting the whole session.
+/// Saturating per-field difference between cumulative snapshots.
 fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     match prev {
         None => cur,
-        Some(p) if cur.input < p.input && cur.cached < p.cached && cur.output < p.output => cur,
         Some(p) => RawUsage {
             input: cur.input.saturating_sub(p.input),
             cached: cur.cached.saturating_sub(p.cached),
@@ -186,10 +182,29 @@ fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     }
 }
 
-/// Longest pause tolerated inside a forked rollout's replayed history. Codex
-/// rewrites the replay to the fork instant and writes it as one dense burst
-/// (tens of milliseconds), while the child's own first turn follows a real
-/// pause of seconds; ccusage's fallback uses the same gap heuristic.
+/// Usage recorded by one token_count event. Prefer the per-turn
+/// `last_token_usage` — but only when the cumulative totals moved, because
+/// long sessions re-emit unchanged snapshots whose `last` would double-count.
+/// Records without `last` fall back to a saturating cumulative delta, so a
+/// counter reset costs at most one skipped event rather than a re-counted
+/// session. This matches ccusage.
+fn event_usage(total: Option<RawUsage>, last: Option<RawUsage>, prev_total: &mut Option<RawUsage>) -> RawUsage {
+    let moved = total.is_none_or(|t| *prev_total != Some(t));
+    let usage = last
+        .filter(|_| moved)
+        .or_else(|| total.map(|t| delta(t, *prev_total)))
+        .unwrap_or_default();
+    if let Some(t) = total {
+        *prev_total = Some(t);
+    }
+    usage
+}
+
+/// Longest pause tolerated inside a rollout's replayed history. Forking or
+/// resuming a session rewrites the parent's records into the new file as one
+/// dense burst (tens of milliseconds) stamped at the fork/resume instant,
+/// while the session's own first turn follows a real pause of seconds;
+/// ccusage's fallback uses the same gap cutoff.
 const REPLAY_BURST_GAP_MS: i64 = 1_000;
 
 fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
@@ -197,32 +212,40 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
 
     let mut model: Option<String> = None;
     let mut service_tier = fallback_tier;
-    let mut seen_turn_context = false;
-    let mut forked = false;
+    let mut seen_meta = false;
+    // Some(ts) while absorbing a replay burst; the timestamp of the last
+    // absorbed record.
     let mut replay_last_ms: Option<i64> = None;
-    let mut replay_done = false;
-    let mut first_line = true;
     let mut project = String::new();
     let mut prev_total: Option<RawUsage> = None;
     let mut report = Report::default();
 
     for_each_line(path, |line| {
-        // session_meta is the rollout's opening record; only there can the
-        // fork marker appear, so no other line pays for that needle.
-        if std::mem::take(&mut first_line) && contains(line, b"\"session_meta\"") {
-            forked = parse_line(line).is_some_and(|e| e.forked_from_id.is_some());
-            return;
-        }
         if !contains(line, b"\"token_count\"")
             && !contains(line, b"\"turn_context\"")
             && !contains(line, b"\"thread_settings_applied\"")
+            && !contains(line, b"\"session_meta\"")
         {
             return;
         }
         let Some(e) = parse_line(line) else { return };
 
+        // The first session_meta is the rollout's own opening record. Any
+        // later one is a parent record copied in by a fork or resume: the
+        // records that follow it — replayed history, token counts included —
+        // belong to the parent's own rollout file and must not be charged
+        // again here. Its timestamp is the rewrite instant, so it seeds the
+        // burst window even when the replay carries no token events.
+        if e.typ.as_deref() == Some("session_meta") {
+            if seen_meta {
+                if let Some((ms, _, _)) = e.timestamp.as_deref().and_then(parse_ts) {
+                    replay_last_ms = Some(ms);
+                }
+            }
+            seen_meta = true;
+            return;
+        }
         if e.typ.as_deref() == Some("turn_context") {
-            seen_turn_context = true;
             if let Some(m) = e.model {
                 model = Some(m);
             }
@@ -247,45 +270,22 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
             return;
         };
 
-        // Forked rollouts open with a replay of the parent's history. Absorb
-        // the burst — first event included — as the child's baseline; the
-        // first gap longer than REPLAY_BURST_GAP_MS is the child's own turn.
-        if forked && !replay_done {
-            match replay_last_ms {
-                Some(prev) if ts_ms - prev > REPLAY_BURST_GAP_MS => replay_done = true,
-                _ => {
-                    replay_last_ms = Some(ts_ms);
-                    if let Some(total) = e.total {
-                        prev_total = Some(total);
-                    }
-                    return;
+        // Inside a replay burst: absorb the event as the parent's baseline.
+        // The first event past the pause is the session's own turn and falls
+        // through to be counted.
+        if let Some(prev) = replay_last_ms {
+            if ts_ms - prev > REPLAY_BURST_GAP_MS {
+                replay_last_ms = None;
+            } else {
+                replay_last_ms = Some(ts_ms);
+                if let Some(total) = e.total {
+                    prev_total = Some(total);
                 }
+                return;
             }
         }
 
-        // Multi-agent Codex sessions replay the parent session's cumulative
-        // token events before their first turn_context. Those events belong
-        // to the parent and must not be attributed to this rollout.
-        if !seen_turn_context {
-            if let Some(total) = e.total {
-                prev_total = Some(total);
-            }
-            return;
-        }
-
-        // `total_token_usage` is cumulative. Using `last_token_usage` for
-        // every event double-counts re-emitted snapshots, which are common in
-        // long Codex sessions. Use the cumulative delta whenever available and
-        // retain the older field only for legacy records without totals.
-        let last = match e.total {
-            Some(total) => {
-                let last = delta(total, prev_total);
-                prev_total = Some(total);
-                last
-            }
-            None => e.last.unwrap_or_default(),
-        };
-
+        let last = event_usage(e.total, e.last, &mut prev_total);
         let cached = last.cached.min(last.input);
         if last.input == 0 && cached == 0 && last.output == 0 {
             return;
@@ -298,8 +298,14 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
             cache_write_1h: 0,
             cache_read: cached,
         };
-        let m = model.clone().unwrap_or_else(|| "unknown".to_string());
-        let (cost, priced) = cost_for(&m, &tokens, ts_ms, service_tier);
+        // Premium tier is part of the priced identity, so fold it into the
+        // model name the way Claude fast builds are named; the `-fast` row
+        // then splits and prices itself through the ordinary table keys.
+        let mut m = model.clone().unwrap_or_else(|| "unknown".to_string());
+        if service_tier == ServiceTier::Fast && !m.ends_with("-fast") {
+            m.push_str("-fast");
+        }
+        let (cost, priced) = cost_for(&m, &tokens, ts_ms);
         report.add(
             q,
             &UsageRow {
@@ -349,6 +355,7 @@ pub fn files() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agg::Command;
 
     #[test]
     fn config_tier_reads_top_level_key() {
@@ -379,16 +386,86 @@ mod tests {
     }
 
     #[test]
-    fn delta_counts_full_reset_whole() {
-        let prev = raw(6_892_162, 6_111_360, 49_657);
-        let cur = raw(83_569, 0, 1_328);
-        assert_eq!(delta(cur, Some(prev)), cur);
+    fn event_usage_prefers_recorded_last_when_totals_move() {
+        // A counter reset dips the totals, but the recorded per-turn usage
+        // still counts and the baseline follows the new epoch.
+        let mut prev = Some(raw(500_000, 0, 20_000));
+        let got = event_usage(Some(raw(12_000, 0, 300)), Some(raw(12_000, 0, 300)), &mut prev);
+        assert_eq!(got, raw(12_000, 0, 300));
+        assert_eq!(prev, Some(raw(12_000, 0, 300)));
     }
 
     #[test]
-    fn delta_clamps_partial_dip_instead_of_recounting() {
-        let prev = raw(900_000, 800_000, 100_000);
-        let cur = raw(1_000_000, 750_000, 120_000);
-        assert_eq!(delta(cur, Some(prev)), raw(100_000, 0, 20_000));
+    fn event_usage_skips_reemitted_snapshots() {
+        let mut prev = Some(raw(1_000, 0, 50));
+        let got = event_usage(Some(raw(1_000, 0, 50)), Some(raw(1_000, 0, 50)), &mut prev);
+        assert_eq!(got, RawUsage::default());
+    }
+
+    #[test]
+    fn event_usage_falls_back_to_delta_without_last() {
+        let mut prev = Some(raw(900, 100, 40));
+        let got = event_usage(Some(raw(1_000, 100, 50)), None, &mut prev);
+        assert_eq!(got, raw(100, 0, 10));
+    }
+
+    fn run(name: &str, lines: &[&str]) -> Report {
+        let path = std::env::temp_dir().join(format!("aiburn-test-{name}.jsonl"));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let q = Query {
+            command: Command::Daily,
+            agent: None,
+            since: None,
+            until: None,
+        };
+        let report = build_report(&path, &q, ServiceTier::Standard);
+        let _ = std::fs::remove_file(&path);
+        report
+    }
+
+    fn token_count(ts: &str, total: (u64, u64, u64), last: (u64, u64, u64)) -> String {
+        format!(
+            r#"{{"timestamp":"{ts}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}},"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
+            total.0, total.1, total.2, last.0, last.1, last.2
+        )
+    }
+
+    #[test]
+    fn replayed_history_is_absorbed() {
+        // Fork/resume shape: own session_meta, then the parent's replayed
+        // session_meta, turn_context, and a dense token burst — all stamped
+        // at the rewrite instant — then the session's own turn after a real
+        // pause. Only the own turn may be counted.
+        let burst1 = token_count("2026-01-01T00:00:10.002Z", (1_000, 0, 50), (1_000, 0, 50));
+        let burst2 = token_count("2026-01-01T00:00:10.003Z", (3_000, 0, 150), (2_000, 0, 100));
+        let own = token_count("2026-01-01T00:00:20.000Z", (3_400, 0, 170), (400, 0, 20));
+        let report = run(
+            "replay",
+            &[
+                r#"{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"child"}}"#,
+                r#"{"timestamp":"2026-01-01T00:00:10.000Z","type":"session_meta","payload":{"id":"parent"}}"#,
+                r#"{"timestamp":"2026-01-01T00:00:10.001Z","type":"turn_context","payload":{"model":"gpt-5.2","cwd":"/p"}}"#,
+                &burst1,
+                &burst2,
+                &own,
+            ],
+        );
+        assert_eq!(report.footer.codex_tokens, 420);
+    }
+
+    #[test]
+    fn plain_rollout_counts_every_turn() {
+        let t1 = token_count("2026-01-01T00:00:10.000Z", (1_000, 0, 50), (1_000, 0, 50));
+        let t2 = token_count("2026-01-01T00:05:00.000Z", (3_000, 0, 150), (2_000, 0, 100));
+        let report = run(
+            "plain",
+            &[
+                r#"{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"solo"}}"#,
+                r#"{"timestamp":"2026-01-01T00:00:05.000Z","type":"turn_context","payload":{"model":"gpt-5.2","cwd":"/p"}}"#,
+                &t1,
+                &t2,
+            ],
+        );
+        assert_eq!(report.footer.codex_tokens, 3_150);
     }
 }

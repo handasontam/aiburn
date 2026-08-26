@@ -24,7 +24,8 @@ Total        $38.35
 Each raw model gets its own row, with repeated date and agent labels suppressed
 so model-level comparisons stay readable.
 Token counts are compact (`K`/`M`/`B`/`T`) and costs exact — pass `--exact` for
-full counts, or `--json` for raw integers.
+full counts, or `--json` for raw integers. JSON groups mirror the table: one
+object per (date/month, agent, model), with the raw model name in `models`.
 
 ## Why aiburn
 
@@ -89,8 +90,8 @@ Only your local coding-agent logs — read in place, never sent anywhere:
 
 - **Claude Code** — `~/.claude/projects` (also `~/.config/claude` and
   `$CLAUDE_CONFIG_DIR`)
-- **Codex** — `~/.codex/sessions` and `~/.codex/archived_sessions`
-  (or `$CODEX_HOME`)
+- **Codex** — `~/.codex/sessions` and `~/.codex/archived_sessions`, plus the
+  top-level `service_tier` in `~/.codex/config.toml` (or `$CODEX_HOME`)
 
 ## Cost accuracy
 
@@ -103,12 +104,11 @@ back to Standard.
 
 Two details worth knowing:
 
-- **Fast mode** costs more per token. Claude's fast model names are shown
-  separately; Codex Fast/Priority usage keeps its raw model name and uses the
-  premium rate in its cost.
-- **Codex replay history is skipped.** Multi-agent rollouts can contain a
-  parent session's token events before their first `turn_context`; those tokens
-  belong to the parent and are not charged again.
+- **Fast mode** costs more per token. Fast/Priority usage appears as its own
+  `-fast` row for both agents, priced at the per-model premium rate.
+- **Codex replay history is skipped.** Forking or resuming a session copies the
+  parent rollout's records into the new file; those replayed token events
+  belong to the parent's own file and are not charged again.
 
 ## Acknowledgements
 
