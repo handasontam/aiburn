@@ -96,8 +96,11 @@ Only your local coding-agent logs — read in place, never sent anywhere:
 ## Cost accuracy
 
 Costs are recomputed from token counts with a built-in, pinned public pricing
-table, including Claude's 5-minute and 1-hour cache tiers. Claude totals track
-ccusage within ~0.3%. Codex logs carry no authoritative cost, so aiburn uses
+table, including Claude's 5-minute and 1-hour cache tiers and per-model cache
+rates (Fable 5.1 reads cache at $0.25/MTok, not the usual 10% of input).
+Claude Code figures match ccusage's to the cent; ccusage's headline total will
+still be higher if it also finds OpenCode, Gemini, or other agent logs that
+aiburn does not read. Codex logs carry no authoritative cost, so aiburn uses
 public list pricing: explicit `priority`/`fast` events use the matching Fast
 rate, missing tiers follow the top-level Codex config, and unknown tiers fall
 back to Standard.

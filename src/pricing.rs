@@ -11,12 +11,18 @@ pub struct Rate {
 
 /// Anthropic: 5m cache write = 1.25× input, 1h = 2× input, cache read = 0.1×.
 const fn c(input: f64, output: f64) -> Rate {
+    c_read(input, output, input * 0.1)
+}
+
+/// Anthropic with an explicit cache-read rate, for models that break the usual
+/// 10%-of-input rule while keeping the cache-write multipliers.
+const fn c_read(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
         cache_write: input * 1.25,
         cache_write_1h: input * 2.0,
-        cache_read: input * 0.1,
+        cache_read,
     }
 }
 
@@ -46,6 +52,8 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-opus-4-5", c(5.0, 25.0)),
     ("claude-opus-4-1", c(15.0, 75.0)),
     ("claude-opus-4", c(15.0, 75.0)),
+    // Fable 5.1 reads cache at $0.25/MTok (2.5% of input, not the usual 10%).
+    ("claude-fable-5-1", c_read(10.0, 50.0, 0.25)),
     ("claude-fable-5", c(10.0, 50.0)),
     ("claude-sonnet-5", c(2.0, 10.0)),
     ("claude-sonnet-4-6", c(3.0, 15.0)),
@@ -170,6 +178,16 @@ mod tests {
         assert_eq!(cost_for("gpt-5.6-luna", &t, 0), (1.42, true));
         // Bare 5.6 follows the flagship.
         assert_eq!(cost_for("gpt-5.6", &t, 0), (35.5, true));
+    }
+
+    #[test]
+    fn fable_5_1_discounts_cache_reads() {
+        let t = one_each();
+        // $10 input + $50 output + $0.25 cache read per MTok.
+        assert_eq!(cost_for("claude-fable-5-1", &t, 0), (60.25, true));
+        // A dated build resolves to 5.1 by longest prefix, not to bare fable-5.
+        assert_eq!(cost_for("claude-fable-5-1-20260901", &t, 0), (60.25, true));
+        assert_eq!(cost_for("claude-fable-5", &t, 0), (61.0, true));
     }
 
     #[test]
