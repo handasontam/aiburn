@@ -67,8 +67,8 @@ static TABLE: &[(&str, Rate)] = &[
     // --- OpenAI / Codex ---
     // GPT-5.6 capability models (Sol, Terra, Luna) have distinct rates; the
     // bare name is aliased to the flagship Sol in `alias`.
-    ("gpt-5.6-sol", o(5.0, 30.0, 0.5)),
-    ("gpt-5.6-sol-fast", o(10.0, 60.0, 1.0)),
+    ("gpt-5.6-sol", o(4.0, 20.0, 0.4)),
+    ("gpt-5.6-sol-fast", o(8.0, 40.0, 0.8)),
     ("gpt-5.6-terra", o(2.0, 12.0, 0.2)),
     ("gpt-5.6-terra-fast", o(4.0, 24.0, 0.4)),
     ("gpt-5.6-luna", o(0.2, 1.2, 0.02)),
@@ -173,11 +173,11 @@ mod tests {
     #[test]
     fn capability_models_use_distinct_standard_rates() {
         let t = one_each();
-        assert_eq!(cost_for("gpt-5.6-sol", &t, 0), (35.5, true));
+        assert_eq!(cost_for("gpt-5.6-sol", &t, 0), (24.4, true));
         assert_eq!(cost_for("gpt-5.6-terra", &t, 0), (14.2, true));
         assert_eq!(cost_for("gpt-5.6-luna", &t, 0), (1.42, true));
         // Bare 5.6 follows the flagship.
-        assert_eq!(cost_for("gpt-5.6", &t, 0), (35.5, true));
+        assert_eq!(cost_for("gpt-5.6", &t, 0), (24.4, true));
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn fast_keys_use_premium_rates() {
         let t = one_each();
-        assert_eq!(cost_for("gpt-5.6-sol-fast", &t, 0), (71.0, true));
+        assert_eq!(cost_for("gpt-5.6-sol-fast", &t, 0), (48.8, true));
         assert_eq!(cost_for("gpt-5.6-luna-fast", &t, 0), (2.84, true));
         assert_eq!(cost_for("gpt-5.5-fast", &t, 0), (88.75, true));
         assert_eq!(cost_for("gpt-5.4-fast", &t, 0), (35.5, true));
