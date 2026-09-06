@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use crate::agg::{Query, Report};
 use crate::json::{contains, P};
 use crate::model::{Agent, ServiceTier, Tokens, UsageRow};
-use crate::pricing::cost_for;
+use crate::pricing::{cost_for, with_fast_suffix};
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
 
@@ -140,7 +140,7 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
 }
 
 /// Existing Codex session directories to scan.
-pub fn codex_dirs() -> Vec<PathBuf> {
+fn codex_dirs() -> Vec<PathBuf> {
     match codex_home() {
         Some(b) => [b.join("sessions"), b.join("archived_sessions")]
             .into_iter()
@@ -162,12 +162,19 @@ fn uuid_from_name(path: &Path) -> Option<String> {
             && tail[2].len() == 4
             && tail[3].len() == 4
             && tail[4].len() == 12
-            && tail.iter().all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()));
+            && tail
+                .iter()
+                .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()));
         if ok {
             return Some(tail.join("-"));
         }
     }
     None
+}
+
+/// One session per rollout file, identified by the filename's UUID.
+fn session_id_of(path: &Path) -> String {
+    uuid_from_name(path).unwrap_or_else(|| file_stem(path))
 }
 
 /// Saturating per-field difference between cumulative snapshots.
@@ -188,7 +195,11 @@ fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
 /// Records without `last` fall back to a saturating cumulative delta, so a
 /// counter reset costs at most one skipped event rather than a re-counted
 /// session. This matches ccusage.
-fn event_usage(total: Option<RawUsage>, last: Option<RawUsage>, prev_total: &mut Option<RawUsage>) -> RawUsage {
+fn event_usage(
+    total: Option<RawUsage>,
+    last: Option<RawUsage>,
+    prev_total: &mut Option<RawUsage>,
+) -> RawUsage {
     let moved = total.is_none_or(|t| *prev_total != Some(t));
     let usage = last
         .filter(|_| moved)
@@ -207,9 +218,7 @@ fn event_usage(total: Option<RawUsage>, last: Option<RawUsage>, prev_total: &mut
 /// ccusage's fallback uses the same gap cutoff.
 const REPLAY_BURST_GAP_MS: i64 = 1_000;
 
-fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
-    let session_id = uuid_from_name(path).unwrap_or_else(|| file_stem(path));
-
+fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: ServiceTier) -> Report {
     let mut model: Option<String> = None;
     let mut service_tier = fallback_tier;
     let mut seen_meta = false;
@@ -262,7 +271,8 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
             }
             return;
         }
-        if e.typ.as_deref() != Some("event_msg") || e.payload_type.as_deref() != Some("token_count") {
+        if e.typ.as_deref() != Some("event_msg") || e.payload_type.as_deref() != Some("token_count")
+        {
             return;
         }
         let Some(ts) = e.timestamp else { return };
@@ -287,7 +297,7 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
 
         let last = event_usage(e.total, e.last, &mut prev_total);
         let cached = last.cached.min(last.input);
-        if last.input == 0 && cached == 0 && last.output == 0 {
+        if last.input == 0 && last.output == 0 {
             return;
         }
 
@@ -298,12 +308,9 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
             cache_write_1h: 0,
             cache_read: cached,
         };
-        // Premium tier is part of the priced identity, so fold it into the
-        // model name the way Claude fast builds are named; the `-fast` row
-        // then splits and prices itself through the ordinary table keys.
         let mut m = model.clone().unwrap_or_else(|| "unknown".to_string());
-        if service_tier == ServiceTier::Fast && !m.ends_with("-fast") {
-            m.push_str("-fast");
+        if service_tier == ServiceTier::Fast {
+            m = with_fast_suffix(m);
         }
         let (cost, priced) = cost_for(&m, &tokens, ts_ms);
         report.add(
@@ -327,24 +334,27 @@ fn build_report(path: &Path, q: &Query, fallback_tier: ServiceTier) -> Report {
 }
 
 pub fn load(files: &[PathBuf], q: &Query) -> Report {
-    // One session per rollout file; drop files whose session id already
-    // appeared (e.g. a live session later archived) before aggregating, so
-    // the parallel reduce is a pure sum with no double counting.
+    if files.is_empty() {
+        return Report::default();
+    }
+    // Drop files whose session id already appeared (e.g. a live session
+    // later archived) before aggregating, so the parallel reduce is a pure
+    // sum with no double counting.
     let mut sorted: Vec<&PathBuf> = files.iter().collect();
     sorted.sort();
     let mut seen: HashSet<String> = HashSet::new();
-    let deduped: Vec<&PathBuf> = sorted
+    let deduped: Vec<(&PathBuf, String)> = sorted
         .into_iter()
-        .filter(|f| {
-            let sid = uuid_from_name(f).unwrap_or_else(|| file_stem(f));
-            seen.insert(sid)
+        .filter_map(|f| {
+            let sid = session_id_of(f);
+            seen.insert(sid.clone()).then_some((f, sid))
         })
         .collect();
 
     let fallback_tier = configured_service_tier();
     deduped
         .into_par_iter()
-        .map(|f| build_report(f, q, fallback_tier))
+        .map(|(f, sid)| build_report(f, sid, q, fallback_tier))
         .reduce(Report::default, Report::merged)
 }
 
@@ -359,10 +369,22 @@ mod tests {
 
     #[test]
     fn config_tier_reads_top_level_key() {
-        assert_eq!(service_tier_from_config("service_tier = \"fast\""), ServiceTier::Fast);
-        assert_eq!(service_tier_from_config("service_tier = 'priority'"), ServiceTier::Fast);
-        assert_eq!(service_tier_from_config("service_tier = \"default\""), ServiceTier::Standard);
-        assert_eq!(service_tier_from_config("model = \"gpt-5.6\""), ServiceTier::Standard);
+        assert_eq!(
+            service_tier_from_config("service_tier = \"fast\""),
+            ServiceTier::Fast
+        );
+        assert_eq!(
+            service_tier_from_config("service_tier = 'priority'"),
+            ServiceTier::Fast
+        );
+        assert_eq!(
+            service_tier_from_config("service_tier = \"default\""),
+            ServiceTier::Standard
+        );
+        assert_eq!(
+            service_tier_from_config("model = \"gpt-5.6\""),
+            ServiceTier::Standard
+        );
     }
 
     #[test]
@@ -382,7 +404,11 @@ mod tests {
     }
 
     fn raw(input: u64, cached: u64, output: u64) -> RawUsage {
-        RawUsage { input, cached, output }
+        RawUsage {
+            input,
+            cached,
+            output,
+        }
     }
 
     #[test]
@@ -390,7 +416,11 @@ mod tests {
         // A counter reset dips the totals, but the recorded per-turn usage
         // still counts and the baseline follows the new epoch.
         let mut prev = Some(raw(500_000, 0, 20_000));
-        let got = event_usage(Some(raw(12_000, 0, 300)), Some(raw(12_000, 0, 300)), &mut prev);
+        let got = event_usage(
+            Some(raw(12_000, 0, 300)),
+            Some(raw(12_000, 0, 300)),
+            &mut prev,
+        );
         assert_eq!(got, raw(12_000, 0, 300));
         assert_eq!(prev, Some(raw(12_000, 0, 300)));
     }
@@ -414,11 +444,10 @@ mod tests {
         std::fs::write(&path, lines.join("\n")).unwrap();
         let q = Query {
             command: Command::Daily,
-            agent: None,
             since: None,
             until: None,
         };
-        let report = build_report(&path, &q, ServiceTier::Standard);
+        let report = build_report(&path, session_id_of(&path), &q, ServiceTier::Standard);
         let _ = std::fs::remove_file(&path);
         report
     }
@@ -455,8 +484,16 @@ mod tests {
 
     #[test]
     fn plain_rollout_counts_every_turn() {
+        // Two turns 100ms apart with no second session_meta: the burst gap
+        // must not apply, or dense real turns would be swallowed as replay.
+        // Codex's `input_tokens` includes the cached portion, so the second
+        // turn's 500 cached tokens move from input to cache, not both.
         let t1 = token_count("2026-01-01T00:00:10.000Z", (1_000, 0, 50), (1_000, 0, 50));
-        let t2 = token_count("2026-01-01T00:05:00.000Z", (3_000, 0, 150), (2_000, 0, 100));
+        let t2 = token_count(
+            "2026-01-01T00:00:10.100Z",
+            (3_000, 500, 150),
+            (2_000, 500, 100),
+        );
         let report = run(
             "plain",
             &[
@@ -467,5 +504,7 @@ mod tests {
             ],
         );
         assert_eq!(report.footer.codex_tokens, 3_150);
+        let g = report.groups.values().next().unwrap();
+        assert_eq!((g.input, g.cache, g.output), (2_500, 500, 150));
     }
 }

@@ -1,8 +1,10 @@
-//! Incremental aggregation. Usage records are folded into `Report` as they are
-//! parsed and then dropped, so peak memory scales with the number of distinct
-//! groups (days / months / sessions) plus the footer, not the number of events.
+//! Incremental aggregation. Usage records are folded into `Report` and
+//! dropped, so peak memory scales with the number of distinct groups (days /
+//! months / sessions) plus whatever a loader must hold to dedup: Codex folds
+//! each event as it is parsed; Claude first keeps one row per streamed
+//! message, so its peak is bounded by distinct messages, not events.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Agent, UsageRow};
 
@@ -13,21 +15,17 @@ pub enum Command {
     Session,
 }
 
-/// The report request: how to group, and which rows to include.
+/// The report request: how to group, and which dates to include. Agent
+/// selection happens upstream by not scanning the other agent's files.
 pub struct Query {
     pub command: Command,
-    pub agent: Option<Agent>,
     pub since: Option<String>,
     pub until: Option<String>,
 }
 
 impl Query {
-    fn accepts(&self, agent: Agent, date: &str) -> bool {
-        if let Some(a) = self.agent {
-            if a != agent {
-                return false;
-            }
-        }
+    /// Inclusive on both ends, comparing local YYYY-MM-DD strings.
+    fn accepts(&self, date: &str) -> bool {
         if let Some(s) = &self.since {
             if date < s.as_str() {
                 return false;
@@ -41,10 +39,11 @@ impl Query {
         true
     }
 
-    /// Unique key per group. Every group is scoped to a single agent so that
-    /// Claude and Codex get separate rows/totals. Daily/monthly rows are
-    /// further split per raw model; a session stays one row, listing its
-    /// models in the Models column.
+    /// Unique key per group; the map's order is the display order. Every
+    /// group is scoped to a single agent so that Claude and Codex get
+    /// separate rows/totals. Daily/monthly rows are further split per raw
+    /// model; a session stays one row, listing its models in the Models
+    /// column.
     fn key(&self, r: &UsageRow) -> String {
         match self.command {
             Command::Monthly => format!("{}|{}|{}", r.month, r.agent.as_str(), r.model),
@@ -65,7 +64,6 @@ impl Query {
 
 #[derive(Default)]
 pub struct Group {
-    pub key: String,
     pub period: String,
     pub agent: Agent,
     pub cost: f64,
@@ -89,14 +87,14 @@ pub struct Footer {
 
 #[derive(Default)]
 pub struct Report {
-    pub groups: HashMap<String, Group>,
+    pub groups: BTreeMap<String, Group>,
     pub footer: Footer,
 }
 
 impl Report {
     /// Fold one usage record in (respecting the query filter), then let it drop.
     pub fn add(&mut self, q: &Query, r: &UsageRow) {
-        if !q.accepts(r.agent, &r.date) {
+        if !q.accepts(&r.date) {
             return;
         }
         let tok = r.tokens.total();
@@ -115,9 +113,7 @@ impl Report {
             self.footer.unpriced_models.insert(r.model.clone());
         }
 
-        let key = q.key(r);
-        let g = self.groups.entry(key.clone()).or_insert_with(|| Group {
-            key,
+        let g = self.groups.entry(q.key(r)).or_insert_with(|| Group {
             period: q.period(r),
             agent: r.agent,
             ..Default::default()
@@ -129,7 +125,10 @@ impl Report {
         if !g.models.contains(&r.model) {
             g.models.insert(r.model.clone());
         }
-        if g.project.is_empty() && !r.project.is_empty() {
+        // The project label follows the most recent event. Rows arrive in
+        // no fixed order (Claude's dedup map, the parallel reduce), so
+        // "first seen" would make the label differ from run to run.
+        if !r.project.is_empty() && (g.project.is_empty() || r.timestamp > g.last_ts) {
             g.project = r.project.clone();
         }
         if r.timestamp > g.last_ts {
@@ -149,7 +148,6 @@ impl Report {
 
         for (k, og) in other.groups {
             let g = self.groups.entry(k).or_insert_with(|| Group {
-                key: og.key.clone(),
                 period: og.period.clone(),
                 agent: og.agent,
                 ..Default::default()
@@ -159,7 +157,7 @@ impl Report {
             g.output += og.output;
             g.cache += og.cache;
             g.models.extend(og.models);
-            if g.project.is_empty() {
+            if !og.project.is_empty() && (g.project.is_empty() || og.last_ts > g.last_ts) {
                 g.project = og.project;
             }
             if og.last_ts > g.last_ts {
@@ -169,13 +167,125 @@ impl Report {
         self
     }
 
-    /// Groups sorted for display: by key (period) or by recency (session).
+    /// Groups in display order: the map's key order (period, agent, model),
+    /// or most recent first for sessions.
     pub fn sorted_groups(&self, command: Command) -> Vec<&Group> {
         let mut v: Vec<&Group> = self.groups.values().collect();
-        match command {
-            Command::Session => v.sort_by(|a, b| b.last_ts.cmp(&a.last_ts)),
-            _ => v.sort_by(|a, b| a.key.cmp(&b.key)),
+        if command == Command::Session {
+            v.sort_by_key(|g| std::cmp::Reverse(g.last_ts));
         }
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Tokens;
+
+    fn row(agent: Agent, date: &str, model: &str, input: u64) -> UsageRow {
+        UsageRow {
+            agent,
+            timestamp: 0,
+            date: date.to_string(),
+            month: date[..7].to_string(),
+            session_id: "s".to_string(),
+            project: String::new(),
+            model: model.to_string(),
+            tokens: Tokens {
+                input,
+                ..Default::default()
+            },
+            cost: 1.0,
+            priced: true,
+        }
+    }
+
+    fn daily(since: Option<&str>, until: Option<&str>) -> Query {
+        Query {
+            command: Command::Daily,
+            since: since.map(str::to_string),
+            until: until.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn date_bounds_are_inclusive() {
+        // Making either bound exclusive silently drops a whole day from
+        // every report.
+        let q = daily(Some("2026-01-02"), Some("2026-01-03"));
+        let mut r = Report::default();
+        for d in ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"] {
+            r.add(&q, &row(Agent::Codex, d, "m", 1));
+        }
+        let periods: Vec<&str> = r.groups.values().map(|g| g.period.as_str()).collect();
+        assert_eq!(periods, ["2026-01-02", "2026-01-03"]);
+    }
+
+    #[test]
+    fn same_day_and_model_split_per_agent() {
+        let q = daily(None, None);
+        let mut r = Report::default();
+        r.add(&q, &row(Agent::Claude, "2026-01-01", "m", 1));
+        r.add(&q, &row(Agent::Codex, "2026-01-01", "m", 1));
+        assert_eq!(r.groups.len(), 2);
+        assert_eq!((r.footer.claude_cost, r.footer.codex_cost), (1.0, 1.0));
+    }
+
+    #[test]
+    fn project_label_follows_the_latest_event_regardless_of_order() {
+        let q = Query {
+            command: Command::Session,
+            since: None,
+            until: None,
+        };
+        let mut early = row(Agent::Claude, "2026-01-01", "m", 1);
+        early.timestamp = 100;
+        early.project = "old".to_string();
+        let mut late = row(Agent::Claude, "2026-01-01", "m", 1);
+        late.timestamp = 200;
+        late.project = "new".to_string();
+        for order in [[&early, &late], [&late, &early]] {
+            let mut r = Report::default();
+            for x in order {
+                r.add(&q, x);
+            }
+            assert_eq!(r.groups.values().next().unwrap().project, "new");
+        }
+        // The same rule when the two events were folded on different threads.
+        let (mut a, mut b) = (Report::default(), Report::default());
+        a.add(&q, &early);
+        b.add(&q, &late);
+        assert_eq!(a.merged(b).groups.values().next().unwrap().project, "new");
+    }
+
+    #[test]
+    fn merged_matches_single_fold() {
+        // `merged` is the parallel reduce; a footer or group field it forgets
+        // under-reports silently, so compare against folding serially.
+        let q = daily(None, None);
+        let rows = [
+            row(Agent::Codex, "2026-01-01", "a", 10),
+            row(Agent::Codex, "2026-01-01", "b", 20),
+            row(Agent::Claude, "2026-01-02", "a", 30),
+        ];
+        let mut one = Report::default();
+        let (mut left, mut right) = (Report::default(), Report::default());
+        for (i, r) in rows.iter().enumerate() {
+            one.add(&q, r);
+            if i.is_multiple_of(2) {
+                left.add(&q, r)
+            } else {
+                right.add(&q, r)
+            }
+        }
+        let m = left.merged(right);
+        assert_eq!(m.groups.len(), one.groups.len());
+        for (k, g) in &one.groups {
+            assert_eq!(m.groups[k].input, g.input, "{k}");
+        }
+        assert_eq!(m.footer.claude_tokens, one.footer.claude_tokens);
+        assert_eq!(m.footer.codex_tokens, one.footer.codex_tokens);
+        assert_eq!(m.footer.codex_cost, one.footer.codex_cost);
     }
 }

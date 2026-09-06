@@ -15,10 +15,8 @@ pub fn find_jsonl(root: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => stack.push(path),
-                Ok(ft) if ft.is_file() => {
-                    if path.extension().is_some_and(|e| e == "jsonl") {
-                        out.push(path);
-                    }
+                Ok(ft) if ft.is_file() && path.extension().is_some_and(|e| e == "jsonl") => {
+                    out.push(path);
                 }
                 _ => {}
             }
@@ -71,7 +69,7 @@ pub fn commas(n: u64) -> String {
     let len = bytes.len();
     let mut out = String::with_capacity(len + len / 3);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);

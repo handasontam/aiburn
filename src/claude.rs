@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use crate::agg::{Query, Report};
 use crate::json::{contains, P};
 use crate::model::{Agent, Tokens, UsageRow};
-use crate::pricing::cost_for;
+use crate::pricing::{cost_for, with_fast_suffix};
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
 
@@ -102,7 +102,7 @@ struct Parsed {
 }
 
 /// Existing Claude Code `projects` directories to scan.
-pub fn claude_dirs() -> Vec<PathBuf> {
+fn claude_dirs() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(env) = std::env::var("CLAUDE_CONFIG_DIR") {
         for p in env.split(',') {
@@ -129,8 +129,7 @@ fn project_from_folder(path: &Path) -> String {
         .unwrap_or("");
     folder
         .split('-')
-        .filter(|s| !s.is_empty())
-        .next_back()
+        .rfind(|s| !s.is_empty())
         .unwrap_or(folder)
         .to_string()
 }
@@ -155,12 +154,10 @@ fn parse_file(path: &Path) -> Parsed {
             Some(m) if m != "<synthetic>" => m,
             _ => return,
         };
-        // Fast mode is the same model billed at a premium ($10/$50 per MTok on
-        // Opus 5). Anthropic names those builds `<model>-fast`, so fold the
-        // usage's `speed` into the name: it prices correctly and the premium
-        // is visible as its own row instead of inflating the standard one.
+        // Fast mode is the same model billed at a premium; as its own `-fast`
+        // row it prices correctly instead of inflating the standard one.
         let model = match e.speed.as_deref() {
-            Some("fast") if !model.ends_with("-fast") => format!("{model}-fast"),
+            Some("fast") => with_fast_suffix(model),
             _ => model,
         };
         let Some(ts) = e.timestamp else { return };
@@ -189,7 +186,11 @@ fn parse_file(path: &Path) -> Parsed {
             date,
             month,
             session_id: e.session_id.unwrap_or_else(|| stem.clone()),
-            project: e.cwd.as_deref().map(basename).unwrap_or_else(|| folder_project.clone()),
+            project: e
+                .cwd
+                .as_deref()
+                .map(basename)
+                .unwrap_or_else(|| folder_project.clone()),
             model,
             tokens,
             cost,
@@ -242,4 +243,47 @@ pub fn load(files: &[PathBuf], q: &Query) -> Report {
 
 pub fn files() -> Vec<PathBuf> {
     claude_dirs().iter().flat_map(|d| find_jsonl(d)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assistant(msg_id: &str, req: &str, output: u64) -> String {
+        let id = if msg_id.is_empty() {
+            String::new()
+        } else {
+            format!(r#""id":"{msg_id}","#)
+        };
+        let req = if req.is_empty() {
+            String::new()
+        } else {
+            format!(r#""requestId":"{req}","#)
+        };
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-01-01T00:00:00.000Z",{req}"sessionId":"s","message":{{{id}"model":"claude-opus-5","usage":{{"input_tokens":100,"output_tokens":{output},"cache_read_input_tokens":40}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn streamed_snapshots_keep_the_largest_output() {
+        // One message is logged once per streamed chunk under the same
+        // (message id, request id) with output growing; summing would
+        // over-count every Claude reply. Snapshots are deliberately out of
+        // order here so "largest" is distinguishable from "last". Rows
+        // without ids are never deduped.
+        let path = std::env::temp_dir().join("aiburn-test-claude-dedup.jsonl");
+        let lines = [
+            assistant("m1", "r1", 10),
+            assistant("m1", "r1", 120),
+            assistant("m1", "r1", 50),
+            assistant("", "", 7),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let parsed = parse_file(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(parsed.keyed.len(), 1);
+        assert_eq!(parsed.keyed["m1::r1"].tokens.output, 120);
+        assert_eq!(parsed.keyless.len(), 1);
+    }
 }

@@ -49,18 +49,16 @@ pub fn parse_ts(ts: &str) -> Option<(i64, String, String)> {
     let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
     let (h, mi, s) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
 
+    // Milliseconds: the first three fraction digits, right-padded with zeros.
     let mut frac = 0i64;
     if b.get(19) == Some(&b'.') {
-        let mut k = 20;
-        let mut digs = String::new();
-        while k < b.len() && b[k].is_ascii_digit() && digs.len() < 3 {
-            digs.push(b[k] as char);
-            k += 1;
+        for k in 20..23 {
+            let digit = b
+                .get(k)
+                .filter(|c| c.is_ascii_digit())
+                .map_or(0, |c| (c - b'0') as i64);
+            frac = frac * 10 + digit;
         }
-        while digs.len() < 3 {
-            digs.push('0');
-        }
-        frac = digs.parse().unwrap_or(0);
     }
 
     let secs = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s;
@@ -82,4 +80,29 @@ pub fn iso_from_ms(ms: i64) -> String {
     let (y, m, d) = civil_from_days(days);
     let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fraction_digits_become_milliseconds() {
+        // The ms value drives the auto-review cutover, session ordering and
+        // the Codex replay-burst gap; a wrong scale shifts all three.
+        let base = parse_ts("2026-01-01T00:00:00Z").unwrap().0;
+        assert_eq!(parse_ts("2026-01-01T00:00:00.5Z").unwrap().0 - base, 500);
+        assert_eq!(
+            parse_ts("2026-01-01T00:00:00.123456Z").unwrap().0 - base,
+            123
+        );
+        assert_eq!(parse_ts("2026-01-01T00:00:00.000Z").unwrap().0 - base, 0);
+    }
+
+    #[test]
+    fn iso_round_trips() {
+        let ms = 1_785_369_600_123; // 2026-07-30T00:00:00.123Z
+        assert_eq!(iso_from_ms(ms), "2026-07-30T00:00:00.123Z");
+        assert_eq!(parse_ts(&iso_from_ms(ms)).unwrap().0, ms);
+    }
 }

@@ -149,13 +149,15 @@ impl<'a> P<'a> {
                         b'u' => {
                             let hx = self.b.get(self.i..self.i + 4)?;
                             self.i += 4;
-                            let code = u32::from_str_radix(std::str::from_utf8(hx).ok()?, 16).ok()?;
+                            let code =
+                                u32::from_str_radix(std::str::from_utf8(hx).ok()?, 16).ok()?;
                             let cp = if (0xD800..=0xDBFF).contains(&code)
                                 && self.b.get(self.i) == Some(&b'\\')
                                 && self.b.get(self.i + 1) == Some(&b'u')
                             {
                                 let hx2 = self.b.get(self.i + 2..self.i + 6)?;
-                                let lo = u32::from_str_radix(std::str::from_utf8(hx2).ok()?, 16).ok()?;
+                                let lo =
+                                    u32::from_str_radix(std::str::from_utf8(hx2).ok()?, 16).ok()?;
                                 self.i += 6;
                                 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
                             } else {
@@ -246,7 +248,10 @@ impl<'a> P<'a> {
             b'"' => self.skip_string_raw(),
             _ => {
                 while self.i < self.b.len()
-                    && !matches!(self.b[self.i], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r')
+                    && !matches!(
+                        self.b[self.i],
+                        b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r'
+                    )
                 {
                     self.i += 1;
                 }
@@ -297,4 +302,48 @@ pub fn escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_lands_at_the_end_of_nested_and_escaped_values() {
+        // Both loaders rely on `skip` to step over `content` arrays; a scanner
+        // that stops early inside one silently loses the fields after it.
+        let line = br#"{"content":[{"text":"a \"}\" ] b","n":[1,[2,{}]]},null,"x\\"],"model":"m","usage":{"input_tokens":"123","output_tokens":4.0}}"#;
+        let mut p = P::new(line);
+        assert!(p.enter_obj());
+        let mut model = None;
+        let mut input = None;
+        let mut output = None;
+        while let Some(k) = p.obj_next() {
+            match k.as_str() {
+                "model" => model = p.str_opt(),
+                "usage" => {
+                    assert!(p.enter_obj());
+                    while let Some(kk) = p.obj_next() {
+                        match kk.as_str() {
+                            "input_tokens" => input = p.u64(),
+                            "output_tokens" => output = p.u64(),
+                            _ => p.skip(),
+                        }
+                    }
+                }
+                _ => p.skip(),
+            }
+        }
+        assert_eq!(model.as_deref(), Some("m"));
+        // Quoted integers count; a float-shaped value keeps its integer part.
+        assert_eq!((input, output), (Some(123), Some(4)));
+    }
+
+    #[test]
+    fn contains_handles_false_starts_and_edges() {
+        assert!(contains(b"aab", b"ab"));
+        assert!(contains(b"xyzab", b"ab"));
+        assert!(!contains(b"a", b"ab"));
+        assert!(!contains(b"abx", b"aby"));
+    }
 }

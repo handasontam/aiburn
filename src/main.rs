@@ -7,6 +7,7 @@ mod pricing;
 mod time;
 mod util;
 
+use std::collections::BTreeSet;
 use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
@@ -34,6 +35,9 @@ Options:
   --json                 Emit JSON instead of a table
   -h, --help             Show this help
   -v, --version          Show version";
+
+/// Session view lists this many most-recent sessions unless `--all`.
+const SESSION_LIMIT: usize = 25;
 
 struct Options {
     command: Command,
@@ -68,17 +72,6 @@ fn parse_args() -> Result<Options, i32> {
             "--exact" => o.exact = true,
             "--claude" => o.agent = Some(Agent::Claude),
             "--codex" => o.agent = Some(Agent::Codex),
-            "--agent" => {
-                i += 1;
-                o.agent = match args.get(i).map(String::as_str) {
-                    Some("claude") => Some(Agent::Claude),
-                    Some("codex") => Some(Agent::Codex),
-                    _ => {
-                        eprintln!("aiburn: --agent expects claude|codex");
-                        return Err(1);
-                    }
-                };
-            }
             "--since" => {
                 i += 1;
                 o.since = args.get(i).cloned();
@@ -209,11 +202,16 @@ fn render_period(groups: &[&Group], label: &str, exact: bool, paint: &Paint) -> 
     )
 }
 
-fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (String, Option<String>) {
-    let shown: &[&Group] = if all || groups.len() <= 25 {
+fn render_session(
+    groups: &[&Group],
+    all: bool,
+    exact: bool,
+    paint: &Paint,
+) -> (String, Option<String>) {
+    let shown: &[&Group] = if all || groups.len() <= SESSION_LIMIT {
         groups
     } else {
-        &groups[..25]
+        &groups[..SESSION_LIMIT]
     };
     let rows: Vec<Vec<String>> = shown
         .iter()
@@ -239,24 +237,37 @@ fn render_session(groups: &[&Group], all: bool, exact: bool, paint: &Paint) -> (
         })
         .collect();
     let table = render_table(
-        &["Last active", "Agent", "Project", "Model(s)", "Tokens", "Cost"],
+        &[
+            "Last active",
+            "Agent",
+            "Project",
+            "Models",
+            "Tokens",
+            "Cost",
+        ],
         &rows,
         &['l', 'l', 'l', 'l', 'r', 'r'],
         None,
         paint,
     );
-    let note = if all || groups.len() <= 25 {
+    let note = if all || groups.len() <= SESSION_LIMIT {
         None
     } else {
         Some(format!(
-            "Showing 25 of {} sessions (most recent). Use --all to list them all.",
+            "Showing {SESSION_LIMIT} of {} sessions (most recent). Use --all to list them all.",
             groups.len()
         ))
     };
     (table, note)
 }
 
-fn render_footer(f: &Footer, exact: bool, elapsed_ms: u128, file_count: usize, paint: &Paint) -> String {
+fn render_footer(
+    f: &Footer,
+    exact: bool,
+    elapsed_ms: u128,
+    file_count: usize,
+    paint: &Paint,
+) -> String {
     let mut lines = vec![
         String::new(),
         format!(
@@ -281,7 +292,7 @@ fn render_footer(f: &Footer, exact: bool, elapsed_ms: u128, file_count: usize, p
         lines.push(paint.yellow(&format!(
             "\n! {} tokens had no known pricing ({}); excluded from cost.",
             tok(f.unpriced_tokens, exact),
-            f.unpriced_models.iter().cloned().collect::<Vec<_>>().join(", ")
+            f.unpriced_models.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
         )));
     }
     lines.push(paint.dim(&format!("\nScanned {file_count} files in {elapsed_ms}ms")));
@@ -290,18 +301,19 @@ fn render_footer(f: &Footer, exact: bool, elapsed_ms: u128, file_count: usize, p
 
 fn json_report(command: &str, groups: &[&Group]) -> String {
     let esc = json::escape;
-    let arr = |v: &[String]| {
+    let arr = |v: &BTreeSet<String>| {
         v.iter()
             .map(|s| format!("\"{}\"", esc(s)))
             .collect::<Vec<_>>()
             .join(", ")
     };
     let mut out = String::new();
-    out.push_str(&format!("{{\n  \"command\": \"{command}\",\n  \"groups\": [\n"));
+    out.push_str(&format!(
+        "{{\n  \"command\": \"{command}\",\n  \"groups\": [\n"
+    ));
     let items: Vec<String> = groups
         .iter()
         .map(|g| {
-            let models: Vec<String> = g.models.iter().cloned().collect();
             let last = match g.last_ts {
                 0 => "null".to_string(),
                 ms => format!("\"{}\"", time::iso_from_ms(ms)),
@@ -311,7 +323,7 @@ fn json_report(command: &str, groups: &[&Group]) -> String {
                 esc(&g.period),
                 g.agent.as_str(),
                 esc(&g.project),
-                arr(&models),
+                arr(&g.models),
                 g.input,
                 g.output,
                 g.cache,
@@ -332,7 +344,6 @@ fn run() -> i32 {
     };
     let query = Query {
         command: o.command,
-        agent: o.agent,
         since: o.since.clone(),
         until: o.until.clone(),
     };
@@ -388,11 +399,19 @@ fn run() -> i32 {
             }
         }
         cmd => {
-            let label = if cmd == Command::Monthly { "Month" } else { "Date" };
+            let label = if cmd == Command::Monthly {
+                "Month"
+            } else {
+                "Date"
+            };
             let _ = writeln!(out, "{}", render_period(&groups, label, o.exact, &paint));
         }
     }
-    let _ = writeln!(out, "{}", render_footer(&report.footer, o.exact, elapsed, file_count, &paint));
+    let _ = writeln!(
+        out,
+        "{}",
+        render_footer(&report.footer, o.exact, elapsed, file_count, &paint)
+    );
     0
 }
 

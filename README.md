@@ -19,6 +19,8 @@ TOTAL                            66.9K    309K  47.2M  $38.35
 Claude       $37.71   47.0M tokens
 Codex         $0.64   567K tokens
 Total        $38.35
+
+Scanned 214 files in 61ms
 ```
 
 Each raw model gets its own row, with repeated date and agent labels suppressed
@@ -110,7 +112,9 @@ ccusage does.
 Two details worth knowing:
 
 - **Fast mode** costs more per token. Fast/Priority usage appears as its own
-  `-fast` row for both agents, priced at the per-model premium rate.
+  `-fast` row for both agents, priced at the per-model premium rate where one
+  is published; otherwise at the base rate, which undercounts rather than
+  dropping the row.
 - **Codex replay history is skipped.** Forking or resuming a session copies the
   parent rollout's records into the new file; those replayed token events
   belong to the parent's own file and are not charged again.

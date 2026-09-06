@@ -31,7 +31,7 @@ impl ServiceTier {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Tokens {
     /// Non-cached input tokens (billed at input rate).
     pub input: u64,
