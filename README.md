@@ -103,7 +103,9 @@ still be higher if it also finds OpenCode, Gemini, or other agent logs that
 aiburn does not read. Codex logs carry no authoritative cost, so aiburn uses
 public list pricing: explicit `priority`/`fast` events use the matching Fast
 rate, missing tiers follow the top-level Codex config, and unknown tiers fall
-back to Standard.
+back to Standard. A Codex request whose whole context (fresh plus cached input)
+exceeds 272K tokens is billed entirely at OpenAI's long-context tier, as
+ccusage does.
 
 Two details worth knowing:
 
