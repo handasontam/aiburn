@@ -40,7 +40,8 @@ const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
 /// Curated public list pricing for the models Claude Code and Codex actually
 /// emit. Premium (Fast/Priority) builds are `-fast` keys next to their base
 /// model — OpenAI's are 2× Standard (2.5× for GPT-5.5), matching ccusage's
-/// multipliers. See `resolve` for how a logged name matches these keys.
+/// multipliers. OpenAI's >272K-context surcharge tiers are not modelled.
+/// See `resolve` for how a logged name matches these keys.
 static TABLE: &[(&str, Rate)] = &[
     // --- Anthropic / Claude Code ---
     ("claude-opus-5", c(5.0, 25.0)),
@@ -65,6 +66,8 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-3-opus", c(15.0, 75.0)),
     ("claude-3-haiku", c(0.25, 1.25)),
     // --- OpenAI / Codex ---
+    ("gpt-6-astra", o(10.0, 50.0, 1.0)),
+    ("gpt-6-astra-fast", o(20.0, 100.0, 2.0)),
     // GPT-5.6 capability models (Sol, Terra, Luna) have distinct rates; the
     // bare name is aliased to the flagship Sol in `alias`.
     ("gpt-5.6-sol", o(4.0, 20.0, 0.4)),
@@ -106,6 +109,7 @@ fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
         "sonnet" => Some("claude-sonnet-5"),
         "haiku" => Some("claude-haiku-4-5"),
         // Older logs omit the capability suffix; the bare name is the flagship.
+        "gpt-6" => Some("gpt-6-astra"),
         "gpt-5.6" => Some("gpt-5.6-sol"),
         // The raw name is retained in reports, but its underlying model
         // changed from GPT-5.5 to GPT-5.6-Luna on the public cutover date.
@@ -178,6 +182,15 @@ mod tests {
         assert_eq!(cost_for("gpt-5.6-luna", &t, 0), (1.42, true));
         // Bare 5.6 follows the flagship.
         assert_eq!(cost_for("gpt-5.6", &t, 0), (24.4, true));
+    }
+
+    #[test]
+    fn gpt_6_astra_rates() {
+        let t = one_each();
+        // $10 input + $50 output + $1 cache read per MTok; Fast is 2×.
+        assert_eq!(cost_for("gpt-6-astra", &t, 0), (61.0, true));
+        assert_eq!(cost_for("gpt-6-astra-fast", &t, 0), (122.0, true));
+        assert_eq!(cost_for("gpt-6", &t, 0), (61.0, true));
     }
 
     #[test]
