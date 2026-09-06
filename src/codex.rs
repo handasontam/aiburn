@@ -36,7 +36,7 @@ fn parse_raw(p: &mut P) -> Option<RawUsage> {
     }
     let mut u = RawUsage::default();
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "input_tokens" => u.input = p.u64().unwrap_or(0),
             "cached_input_tokens" => u.cached = p.u64().unwrap_or(0),
             "output_tokens" => u.output = p.u64().unwrap_or(0),
@@ -51,7 +51,7 @@ fn parse_info(p: &mut P, e: &mut Extract) {
         return;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "total_token_usage" => e.total = parse_raw(p),
             "last_token_usage" => e.last = parse_raw(p),
             _ => p.skip(),
@@ -64,7 +64,7 @@ fn parse_thread_settings(p: &mut P, e: &mut Extract) {
         return;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "service_tier" => e.service_tier = p.str_opt(),
             _ => p.skip(),
         }
@@ -76,7 +76,7 @@ fn parse_payload(p: &mut P, e: &mut Extract) {
         return;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "type" => e.payload_type = p.str_opt(),
             "model" => e.model = p.str_opt(),
             "cwd" => e.cwd = p.str_opt(),
@@ -129,7 +129,7 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
         return None;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "type" => e.typ = p.str_opt(),
             "timestamp" => e.timestamp = p.str_opt(),
             "payload" => parse_payload(&mut p, &mut e),
@@ -218,6 +218,21 @@ fn event_usage(
 /// ccusage's fallback uses the same gap cutoff.
 const REPLAY_BURST_GAP_MS: i64 = 1_000;
 
+/// Cheap reject for the bulky record types (message bodies, compaction
+/// summaries) that make up most of a rollout: a record's own `type` sits in
+/// its first bytes, so those never pay for a full-line scan. Anything else
+/// falls through to the exact needle check.
+fn wanted_line(line: &[u8]) -> bool {
+    let head = &line[..line.len().min(96)];
+    if contains(head, b"\"type\":\"response_item\"") || contains(head, b"\"type\":\"compacted\"") {
+        return false;
+    }
+    contains(line, b"\"token_count\"")
+        || contains(line, b"\"turn_context\"")
+        || contains(line, b"\"thread_settings_applied\"")
+        || contains(line, b"\"session_meta\"")
+}
+
 fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: ServiceTier) -> Report {
     let mut model: Option<String> = None;
     let mut service_tier = fallback_tier;
@@ -230,11 +245,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
     let mut report = Report::default();
 
     let read = for_each_line(path, |line| {
-        if !contains(line, b"\"token_count\"")
-            && !contains(line, b"\"turn_context\"")
-            && !contains(line, b"\"thread_settings_applied\"")
-            && !contains(line, b"\"session_meta\"")
-        {
+        if !wanted_line(line) {
             return;
         }
         let Some(e) = parse_line(line) else { return };

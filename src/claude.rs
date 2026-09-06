@@ -36,7 +36,7 @@ fn parse_usage(p: &mut P, e: &mut Extract) {
         return;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "input_tokens" => e.input = p.u64().unwrap_or(0),
             "output_tokens" => e.output = p.u64().unwrap_or(0),
             "cache_creation_input_tokens" => e.cache_creation_flat = p.u64().unwrap_or(0),
@@ -45,7 +45,7 @@ fn parse_usage(p: &mut P, e: &mut Extract) {
             "cache_creation" => {
                 if p.enter_obj() {
                     while let Some(kk) = p.obj_next() {
-                        match kk.as_str() {
+                        match kk {
                             "ephemeral_5m_input_tokens" => e.cache_5m = p.u64().unwrap_or(0),
                             "ephemeral_1h_input_tokens" => e.cache_1h = p.u64().unwrap_or(0),
                             _ => p.skip(),
@@ -63,7 +63,7 @@ fn parse_message(p: &mut P, e: &mut Extract) {
         return;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "id" => e.msg_id = p.str_opt(),
             "model" => e.model = p.str_opt(),
             "usage" => parse_usage(p, e),
@@ -79,7 +79,7 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
         return None;
     }
     while let Some(k) = p.obj_next() {
-        match k.as_str() {
+        match k {
             "type" => e.typ = p.str_opt(),
             "timestamp" => e.timestamp = p.str_opt(),
             "requestId" => e.request_id = p.str_opt(),

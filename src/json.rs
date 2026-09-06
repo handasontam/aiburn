@@ -41,7 +41,7 @@ impl<'a> P<'a> {
 
     /// Next `"key":` in the current object, positioned at its value. Returns
     /// None at the closing `}` (which it consumes).
-    pub fn obj_next(&mut self) -> Option<String> {
+    pub fn obj_next(&mut self) -> Option<&'a str> {
         self.ws();
         match self.peek() {
             b',' => {
@@ -61,7 +61,7 @@ impl<'a> P<'a> {
                 None
             }
             b'"' => {
-                let k = self.string();
+                let k = self.raw_str();
                 self.ws();
                 if self.peek() == b':' {
                     self.i += 1;
@@ -175,6 +175,23 @@ impl<'a> P<'a> {
             }
         }
         None
+    }
+
+    /// A string's bytes as written, escapes included, borrowed from the line.
+    /// Object keys are only ever compared against plain ASCII field names and
+    /// an escaped spelling of one never occurs, so keys skip the unescape and
+    /// the copy that `string` does for values.
+    fn raw_str(&mut self) -> Option<&'a str> {
+        if self.peek() != b'"' {
+            return None;
+        }
+        let start = self.i + 1;
+        self.skip_string_raw();
+        let end = self
+            .i
+            .checked_sub(1)
+            .filter(|&e| e >= start && self.b[e] == b'"')?;
+        std::str::from_utf8(&self.b[start..end]).ok()
     }
 
     fn skip_string_raw(&mut self) {
@@ -319,12 +336,12 @@ mod tests {
         let mut input = None;
         let mut output = None;
         while let Some(k) = p.obj_next() {
-            match k.as_str() {
+            match k {
                 "model" => model = p.str_opt(),
                 "usage" => {
                     assert!(p.enter_obj());
                     while let Some(kk) = p.obj_next() {
-                        match kk.as_str() {
+                        match kk {
                             "input_tokens" => input = p.u64(),
                             "output_tokens" => output = p.u64(),
                             _ => p.skip(),

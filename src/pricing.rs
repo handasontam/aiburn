@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::model::Tokens;
 
 /// Rates in USD per 1,000,000 tokens.
@@ -179,7 +181,12 @@ fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
 /// instead of prefix-matching the standard rate. A base with no premium key
 /// keeps its own rate, which undercounts rather than dropping the row to $0.
 fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
-    let key = model.to_ascii_lowercase();
+    // Logged names are already lowercase; only allocate for the odd one out.
+    let key: Cow<str> = if model.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(model.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(model)
+    };
     let Some(base) = key.strip_suffix("-fast") else {
         return lookup(&key, at_ms).map(|(_, r)| r);
     };
