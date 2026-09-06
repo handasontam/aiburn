@@ -73,6 +73,9 @@ pub struct Group {
     pub models: BTreeSet<String>,
     pub project: String,
     pub last_ts: i64,
+    /// Local YYYY-MM-DD of the most recent event, so the session table's
+    /// "Last active" agrees with the daily view and `--since`/`--until`.
+    pub last_date: String,
 }
 
 #[derive(Default)]
@@ -83,6 +86,9 @@ pub struct Footer {
     pub codex_tokens: u64,
     pub unpriced_tokens: u64,
     pub unpriced_models: BTreeSet<String>,
+    /// Files that could not be opened or read to the end; their usage is
+    /// missing from every number above.
+    pub unreadable_files: usize,
 }
 
 #[derive(Default)]
@@ -131,8 +137,9 @@ impl Report {
         if !r.project.is_empty() && (g.project.is_empty() || r.timestamp > g.last_ts) {
             g.project = r.project.clone();
         }
-        if r.timestamp > g.last_ts {
+        if r.timestamp > g.last_ts || g.last_date.is_empty() {
             g.last_ts = r.timestamp;
+            g.last_date = r.date.clone();
         }
     }
 
@@ -145,6 +152,7 @@ impl Report {
         f.codex_tokens += other.footer.codex_tokens;
         f.unpriced_tokens += other.footer.unpriced_tokens;
         f.unpriced_models.extend(other.footer.unpriced_models);
+        f.unreadable_files += other.footer.unreadable_files;
 
         for (k, og) in other.groups {
             let g = self.groups.entry(k).or_insert_with(|| Group {
@@ -160,8 +168,9 @@ impl Report {
             if !og.project.is_empty() && (g.project.is_empty() || og.last_ts > g.last_ts) {
                 g.project = og.project;
             }
-            if og.last_ts > g.last_ts {
+            if og.last_ts > g.last_ts || g.last_date.is_empty() {
                 g.last_ts = og.last_ts;
+                g.last_date = og.last_date;
             }
         }
         self
@@ -233,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn project_label_follows_the_latest_event_regardless_of_order() {
+    fn latest_event_sets_project_and_last_date_regardless_of_order() {
         let q = Query {
             command: Command::Session,
             since: None,
@@ -242,21 +251,26 @@ mod tests {
         let mut early = row(Agent::Claude, "2026-01-01", "m", 1);
         early.timestamp = 100;
         early.project = "old".to_string();
-        let mut late = row(Agent::Claude, "2026-01-01", "m", 1);
+        let mut late = row(Agent::Claude, "2026-01-02", "m", 1);
         late.timestamp = 200;
         late.project = "new".to_string();
+        let latest = |r: &Report| {
+            let g = r.groups.values().next().unwrap();
+            (g.project.clone(), g.last_date.clone())
+        };
+        let want = ("new".to_string(), "2026-01-02".to_string());
         for order in [[&early, &late], [&late, &early]] {
             let mut r = Report::default();
             for x in order {
                 r.add(&q, x);
             }
-            assert_eq!(r.groups.values().next().unwrap().project, "new");
+            assert_eq!(latest(&r), want);
         }
         // The same rule when the two events were folded on different threads.
         let (mut a, mut b) = (Report::default(), Report::default());
         a.add(&q, &early);
         b.add(&q, &late);
-        assert_eq!(a.merged(b).groups.values().next().unwrap().project, "new");
+        assert_eq!(latest(&a.merged(b)), want);
     }
 
     #[test]

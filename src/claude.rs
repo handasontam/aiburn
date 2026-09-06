@@ -99,6 +99,7 @@ struct Parsed {
     keyed: HashMap<String, UsageRow>,
     /// Assistant rows lacking an id/req pair — never deduped.
     keyless: Vec<UsageRow>,
+    unreadable: bool,
 }
 
 /// Existing Claude Code `projects` directories to scan.
@@ -140,9 +141,10 @@ fn parse_file(path: &Path) -> Parsed {
     let mut out = Parsed {
         keyed: HashMap::new(),
         keyless: Vec::new(),
+        unreadable: false,
     };
 
-    for_each_line(path, |line| {
+    let read = for_each_line(path, |line| {
         if !contains(line, b"\"input_tokens\"") {
             return;
         }
@@ -213,6 +215,7 @@ fn parse_file(path: &Path) -> Parsed {
             _ => out.keyless.push(row),
         }
     });
+    out.unreadable = read.is_err();
     out
 }
 
@@ -223,6 +226,7 @@ pub fn load(files: &[PathBuf], q: &Query) -> Report {
     let mut keyed: HashMap<String, UsageRow> = HashMap::new();
     let mut report = Report::default();
     for p in partials {
+        report.footer.unreadable_files += p.unreadable as usize;
         for (k, row) in p.keyed {
             match keyed.get(&k) {
                 Some(prev) if prev.tokens.output >= row.tokens.output => {}

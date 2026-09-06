@@ -152,29 +152,39 @@ fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
     }
 }
 
-fn lookup(key: &str, at_ms: i64) -> Option<&'static Rate> {
-    let find = |key: &str| TABLE.iter().find(|(k, _)| *k == key).map(|(_, r)| r);
-    if let Some(r) = find(key) {
-        return Some(r);
+fn find(key: &str) -> Option<(&'static str, &'static Rate)> {
+    TABLE.iter().find(|(k, _)| *k == key).map(|(k, r)| (*k, r))
+}
+
+/// Returns the matched `TABLE` entry as (key, rate).
+fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
+    if let Some(hit) = find(key) {
+        return Some(hit);
     }
-    if let Some(r) = alias(key, at_ms).and_then(find) {
-        return Some(r);
+    if let Some(hit) = alias(key, at_ms).and_then(find) {
+        return Some(hit);
     }
     // longest matching prefix (handles dated/regional suffixes)
     TABLE
         .iter()
         .filter(|(k, _)| key.starts_with(*k))
         .max_by_key(|(k, _)| k.len())
-        .map(|(_, r)| r)
+        .map(|(k, r)| (*k, r))
 }
 
 /// Match a logged model name to its rate: exact, then bare alias, then
 /// longest prefix (so dated/regional variants resolve to their base). A
-/// `-fast` build we have no premium rate for retries as its base model, which
-/// undercounts rather than dropping the row to $0.
+/// `-fast` build resolves its base name first and then takes that key's
+/// premium sibling, so `claude-opus-5-20260301-fast` finds `claude-opus-5-fast`
+/// instead of prefix-matching the standard rate. A base with no premium key
+/// keeps its own rate, which undercounts rather than dropping the row to $0.
 fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
     let key = model.to_ascii_lowercase();
-    lookup(&key, at_ms).or_else(|| lookup(key.strip_suffix("-fast")?, at_ms))
+    let Some(base) = key.strip_suffix("-fast") else {
+        return lookup(&key, at_ms).map(|(_, r)| r);
+    };
+    let (base_key, base_rate) = lookup(base, at_ms)?;
+    Some(find(&format!("{base_key}-fast")).map_or(base_rate, |(_, r)| r))
 }
 
 /// Returns (cost in USD, whether pricing was found). `at_ms` is when the usage
@@ -300,14 +310,20 @@ mod tests {
         // An exact `-fast` key wins over stripping the suffix.
         assert_eq!(usd("gpt-5.6-sol-fast", &t, 0), 40.88);
         assert_eq!(usd("gpt-5.5-fast", &t, 0), 76.375);
-        // A fast build with no premium key and no prefix match falls back to
-        // its base model rather than $0. `codex-auto-review-fast` is the live
-        // name codex.rs emits for a Fast-tier review.
+        // Dated and aliased names find the premium sibling of their resolved
+        // base key instead of prefix-matching the standard rate.
+        assert_eq!(
+            usd("claude-opus-5-20260301-fast", &t, 0),
+            usd("claude-opus-5-fast", &t, 0)
+        );
+        assert_eq!(usd("gpt-6-fast", &t, 0), 102.2);
         let at = AUTO_REVIEW_LUNA_AT_MS;
         assert_eq!(
             usd("codex-auto-review-fast", &t, at),
-            usd("codex-auto-review", &t, at)
+            usd("gpt-5.6-luna-fast", &t, at)
         );
+        // A base with no premium key keeps its own rate rather than $0.
+        assert_eq!(usd("gpt-5.2-fast", &t, 0), usd("gpt-5.2", &t, 0));
     }
 
     #[test]

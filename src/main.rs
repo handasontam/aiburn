@@ -74,11 +74,11 @@ fn parse_args() -> Result<Options, i32> {
             "--codex" => o.agent = Some(Agent::Codex),
             "--since" => {
                 i += 1;
-                o.since = args.get(i).cloned();
+                o.since = Some(date_arg(a, args.get(i))?);
             }
             "--until" => {
                 i += 1;
-                o.until = args.get(i).cloned();
+                o.until = Some(date_arg(a, args.get(i))?);
             }
             "-h" | "--help" => {
                 println!("{HELP}");
@@ -96,6 +96,25 @@ fn parse_args() -> Result<Options, i32> {
         i += 1;
     }
     Ok(o)
+}
+
+/// `--since`/`--until` values are string-compared against local YYYY-MM-DD
+/// dates, so anything else would silently include everything or nothing.
+fn date_arg(flag: &str, value: Option<&String>) -> Result<String, i32> {
+    let shaped = |v: &str| {
+        v.len() == 10
+            && v.bytes().enumerate().all(|(i, b)| match i {
+                4 | 7 => b == b'-',
+                _ => b.is_ascii_digit(),
+            })
+    };
+    match value {
+        Some(v) if shaped(v) => Ok(v.clone()),
+        _ => {
+            eprintln!("aiburn: {flag} expects a date as YYYY-MM-DD");
+            Err(1)
+        }
+    }
 }
 
 /// Display name for a model: drop the `claude-` vendor prefix and any trailing
@@ -217,10 +236,10 @@ fn render_session(
         .iter()
         .map(|g| {
             let models = models_cell(g);
-            let last = if g.last_ts > 0 {
-                time::iso_from_ms(g.last_ts)[..10].to_string()
-            } else {
+            let last = if g.last_date.is_empty() {
                 "–".to_string()
+            } else {
+                g.last_date.clone()
             };
             vec![
                 last,
@@ -293,6 +312,12 @@ fn render_footer(
             "\n! {} tokens had no known pricing ({}); excluded from cost.",
             tok(f.unpriced_tokens, exact),
             f.unpriced_models.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    if f.unreadable_files > 0 {
+        lines.push(paint.yellow(&format!(
+            "\n! {} files could not be read; their usage is missing.",
+            f.unreadable_files
         )));
     }
     lines.push(paint.dim(&format!("\nScanned {file_count} files in {elapsed_ms}ms")));
@@ -417,4 +442,21 @@ fn run() -> i32 {
 
 fn main() {
     std::process::exit(run());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_flags_reject_anything_but_a_calendar_date() {
+        let ok = |v: &str| date_arg("--since", Some(&v.to_string())).is_ok();
+        assert!(ok("2026-01-02"));
+        // A missing value used to become "no filter"; a word or a short form
+        // used to be string-compared and filter everything or nothing.
+        assert!(date_arg("--since", None).is_err());
+        assert!(!ok("july"));
+        assert!(!ok("2026-1-2"));
+        assert!(!ok("--codex"));
+    }
 }

@@ -229,7 +229,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
     let mut prev_total: Option<RawUsage> = None;
     let mut report = Report::default();
 
-    for_each_line(path, |line| {
+    let read = for_each_line(path, |line| {
         if !contains(line, b"\"token_count\"")
             && !contains(line, b"\"turn_context\"")
             && !contains(line, b"\"thread_settings_applied\"")
@@ -329,6 +329,9 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
             },
         );
     });
+    if read.is_err() {
+        report.footer.unreadable_files += 1;
+    }
 
     report
 }
@@ -480,6 +483,18 @@ mod tests {
             ],
         );
         assert_eq!(report.footer.codex_tokens, 420);
+    }
+
+    #[test]
+    fn unreadable_file_is_counted_not_ignored() {
+        let path = std::env::temp_dir().join("aiburn-test-does-not-exist.jsonl");
+        let q = Query {
+            command: Command::Daily,
+            since: None,
+            until: None,
+        };
+        let report = build_report(&path, "x".to_string(), &q, ServiceTier::Standard);
+        assert_eq!(report.footer.unreadable_files, 1);
     }
 
     #[test]

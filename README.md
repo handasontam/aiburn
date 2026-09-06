@@ -95,6 +95,10 @@ Only your local coding-agent logs — read in place, never sent anywhere:
 - **Codex** — `~/.codex/sessions` and `~/.codex/archived_sessions`, plus the
   top-level `service_tier` in `~/.codex/config.toml` (or `$CODEX_HOME`)
 
+A file that cannot be opened or read to the end is counted in the footer
+rather than silently skipped, so a permissions problem shows up as a warning
+instead of a smaller total.
+
 ## Cost accuracy
 
 Costs are recomputed from token counts with a built-in, pinned public pricing

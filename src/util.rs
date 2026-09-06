@@ -26,21 +26,18 @@ pub fn find_jsonl(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Stream a file line by line, reusing one buffer so peak memory stays bounded
-/// to a single line regardless of file size (files here reach ~150 MB).
-pub fn for_each_line<F: FnMut(&[u8])>(path: &Path, mut f: F) {
-    let file = match File::open(path) {
-        Ok(x) => x,
-        Err(_) => return,
-    };
-    let mut reader = BufReader::with_capacity(1 << 16, file);
+/// to a single line regardless of file size (files here reach ~150 MB). Err
+/// means the file could not be opened or a read failed partway, so some or
+/// all of its lines were never delivered.
+pub fn for_each_line<F: FnMut(&[u8])>(path: &Path, mut f: F) -> std::io::Result<()> {
+    let mut reader = BufReader::with_capacity(1 << 16, File::open(path)?);
     let mut buf = Vec::with_capacity(8192);
     loop {
         buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => break,
-            Ok(_) => f(&buf),
-            Err(_) => break,
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
         }
+        f(&buf);
     }
 }
 
