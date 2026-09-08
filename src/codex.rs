@@ -26,6 +26,8 @@ struct Extract {
     model: Option<String>,
     cwd: Option<String>,
     service_tier: Option<String>,
+    session_id: Option<String>,
+    has_fork_parent: bool,
     total: Option<RawUsage>,
     last: Option<RawUsage>,
 }
@@ -77,9 +79,11 @@ fn parse_payload(p: &mut P, e: &mut Extract) {
     }
     while let Some(k) = p.obj_next() {
         match k {
+            "id" => e.session_id = p.str_opt(),
             "type" => e.payload_type = p.str_opt(),
             "model" => e.model = p.str_opt(),
             "cwd" => e.cwd = p.str_opt(),
+            "forked_from_id" => e.has_fork_parent = p.str_opt().is_some(),
             "thread_settings" => parse_thread_settings(p, e),
             "info" => parse_info(p, e),
             _ => p.skip(),
@@ -237,6 +241,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
     let mut model: Option<String> = None;
     let mut service_tier = fallback_tier;
     let mut seen_meta = false;
+    let mut own_session_id = None;
     // Some(ts) while absorbing a replay burst; the timestamp of the last
     // absorbed record.
     let mut replay_last_ms: Option<i64> = None;
@@ -250,17 +255,18 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
         }
         let Some(e) = parse_line(line) else { return };
 
-        // The first session_meta is the rollout's own opening record. Any
-        // later one is a parent record copied in by a fork or resume: the
-        // records that follow it — replayed history, token counts included —
-        // belong to the parent's own rollout file and must not be charged
-        // again here. Its timestamp is the rewrite instant, so it seeds the
-        // burst window even when the replay carries no token events.
+        // Forks can replay token events before copying the parent's metadata.
+        // Start absorbing at the child's fork marker or foreign metadata.
+        // Repeated metadata for this same session is an ordinary resume;
+        // its first real request may finish within the replay gap.
         if e.typ.as_deref() == Some("session_meta") {
-            if seen_meta {
+            if (!seen_meta && e.has_fork_parent) || (seen_meta && e.session_id != own_session_id) {
                 if let Some((ms, _, _)) = e.timestamp.as_deref().and_then(parse_ts) {
                     replay_last_ms = Some(ms);
                 }
+            }
+            if !seen_meta {
+                own_session_id = e.session_id;
             }
             seen_meta = true;
             return;
@@ -494,6 +500,77 @@ mod tests {
             ],
         );
         assert_eq!(report.footer.codex_tokens, 420);
+    }
+
+    #[test]
+    fn fork_marker_absorbs_history_before_parent_metadata() {
+        // Observed forks begin with token history, then copy the parent's
+        // metadata. The first replay also crosses a wall-clock second.
+        let burst = token_count(
+            "2026-01-01T00:00:11.001Z",
+            (1_000, 500, 50),
+            (1_000, 500, 50),
+        );
+        let duplicate = token_count(
+            "2026-01-01T00:00:20.000Z",
+            (1_000, 500, 50),
+            (1_000, 500, 50),
+        );
+        let own = token_count("2026-01-01T00:00:20.100Z", (1_400, 600, 70), (400, 100, 20));
+        for parent_metadata in [false, true] {
+            let mut lines = vec![
+                r#"{"timestamp":"2026-01-01T00:00:10.999Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}"#,
+                &burst,
+            ];
+            if parent_metadata {
+                lines.push(r#"{"timestamp":"2026-01-01T00:00:11.002Z","type":"session_meta","payload":{"id":"parent"}}"#);
+            }
+            lines.extend([
+                r#"{"timestamp":"2026-01-01T00:00:19.000Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#,
+                &duplicate,
+                &own,
+            ]);
+            let report = run("fork-leading-history", &lines);
+            assert_eq!(report.footer.codex_tokens, 420);
+            assert_eq!(report.groups.len(), 1);
+            let g = report.groups.values().next().unwrap();
+            assert_eq!((g.input, g.cache, g.output), (300, 100, 20));
+        }
+    }
+
+    #[test]
+    fn fork_without_replayed_usage_keeps_its_first_turn() {
+        let own = token_count("2026-01-01T00:00:20.000Z", (400, 100, 20), (400, 100, 20));
+        let report = run(
+            "fork-no-history",
+            &[
+                r#"{"timestamp":"2026-01-01T00:00:10.000Z","type":"session_meta","payload":{"id":"child","forked_from_id":"parent"}}"#,
+                r#"{"timestamp":"2026-01-01T00:00:19.000Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#,
+                &own,
+            ],
+        );
+        assert_eq!(report.footer.codex_tokens, 420);
+    }
+
+    #[test]
+    fn same_session_resume_keeps_requests_within_the_replay_gap() {
+        let first = token_count(
+            "2026-01-01T00:00:05.000Z",
+            (1_000, 500, 50),
+            (1_000, 500, 50),
+        );
+        let resumed = token_count("2026-01-01T00:00:10.800Z", (1_400, 600, 70), (400, 100, 20));
+        let report = run(
+            "resume",
+            &[
+                r#"{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"solo"}}"#,
+                r#"{"timestamp":"2026-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#,
+                &first,
+                r#"{"timestamp":"2026-01-01T00:00:10.000Z","type":"session_meta","payload":{"id":"solo"}}"#,
+                &resumed,
+            ],
+        );
+        assert_eq!(report.footer.codex_tokens, 1_470);
     }
 
     #[test]
