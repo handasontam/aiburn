@@ -58,6 +58,10 @@ const fn o_lc(input: f64, output: f64, cache_read: f64) -> Rate {
 /// multipliers. See `resolve` for how a logged name matches these keys.
 static TABLE: &[(&str, Rate)] = &[
     // --- Anthropic / Claude Code ---
+    // Opus 5.5 is cheaper than Opus 5 and reads cache at 5% of input; its own
+    // key keeps it from prefix-matching `claude-opus-5`.
+    ("claude-opus-5-5", c_read(4.0, 20.0, 0.2)),
+    ("claude-opus-5-5-fast", c_read(8.0, 40.0, 0.4)),
     ("claude-opus-5", c(5.0, 25.0)),
     // Fast mode: same model, ~2.5× output speed at premium rates.
     ("claude-opus-5-fast", c(10.0, 50.0)),
@@ -82,6 +86,10 @@ static TABLE: &[(&str, Rate)] = &[
     // --- OpenAI / Codex ---
     ("gpt-6-astra", o_lc(10.0, 50.0, 1.0)),
     ("gpt-6-astra-fast", o_lc(20.0, 100.0, 2.0)),
+    ("gpt-6-sol", o_lc(2.0, 10.0, 0.2)),
+    ("gpt-6-sol-fast", o_lc(4.0, 20.0, 0.4)),
+    ("gpt-6-luna", o_lc(0.1, 0.5, 0.01)),
+    ("gpt-6-luna-fast", o_lc(0.2, 1.0, 0.02)),
     // GPT-5.6 capability models (Sol, Terra, Luna) have distinct rates; the
     // bare name is aliased to the flagship Sol in `alias`.
     ("gpt-5.6-sol", o_lc(4.0, 20.0, 0.4)),
@@ -244,6 +252,8 @@ mod tests {
         assert_eq!(usd("gpt-5.6-terra", &t, 0), 12.22);
         assert_eq!(usd("gpt-5.6-luna", &t, 0), 1.222);
         assert_eq!(usd("gpt-6-astra", &t, 0), 51.1);
+        assert_eq!(usd("gpt-6-sol", &t, 0), 10.22);
+        assert_eq!(usd("gpt-6-luna", &t, 0), 0.511);
         // Bare names follow the flagship of their generation.
         assert_eq!(usd("gpt-5.6", &t, 0), 20.44);
         assert_eq!(usd("gpt-6", &t, 0), 51.1);
@@ -309,6 +319,16 @@ mod tests {
         // A dated build resolves to 5.1 by longest prefix, not to bare fable-5.
         assert_eq!(usd("claude-fable-5-1-20260901", &t, 0), 51.025);
         assert_eq!(usd("claude-fable-5", &t, 0), 51.1);
+    }
+
+    #[test]
+    fn opus_5_5_does_not_resolve_to_opus_5() {
+        let t = short();
+        // $4 input + $20 output + $0.20 cache read per MTok.
+        assert_eq!(usd("claude-opus-5-5", &t, 0), 20.42);
+        assert_eq!(usd("claude-opus-5-5-20261001", &t, 0), 20.42);
+        assert_eq!(usd("claude-opus-5-5-20261001-fast", &t, 0), 40.84);
+        assert_eq!(usd("claude-opus-5", &t, 0), 25.55);
     }
 
     #[test]
