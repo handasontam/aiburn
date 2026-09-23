@@ -66,6 +66,7 @@ static TABLE: &[(&str, Rate)] = &[
     // Fast mode: same model, ~2.5× output speed at premium rates.
     ("claude-opus-5-fast", c(10.0, 50.0)),
     ("claude-opus-4-8", c(5.0, 25.0)),
+    ("claude-opus-4-8-fast", c(10.0, 50.0)),
     ("claude-opus-4-7", c(5.0, 25.0)),
     ("claude-opus-4-6", c(5.0, 25.0)),
     ("claude-opus-4-5", c(5.0, 25.0)),
@@ -103,6 +104,8 @@ static TABLE: &[(&str, Rate)] = &[
     ("gpt-5.4", o_lc(2.5, 15.0, 0.25)),
     ("gpt-5.4-fast", o_lc(5.0, 30.0, 0.5)),
     ("gpt-5.4-mini", o(0.75, 4.5, 0.075)),
+    ("gpt-5.4-mini-fast", o(1.5, 9.0, 0.15)),
+    ("gpt-5.4-nano", o(0.2, 1.25, 0.02)),
     ("gpt-5.3-codex", o(1.75, 14.0, 0.175)),
     ("gpt-5.3-codex-fast", o(3.5, 28.0, 0.35)),
     ("gpt-5.3", o(1.75, 14.0, 0.175)),
@@ -120,6 +123,13 @@ static TABLE: &[(&str, Rate)] = &[
     ("codex-mini", o(1.5, 6.0, 0.375)),
     ("o3", o(2.0, 8.0, 0.5)),
     ("o4-mini", o(1.1, 4.4, 0.275)),
+    // Pro models publish no cached-input discount, so cached tokens bill as
+    // fresh input; their own keys keep them off the base model's rate.
+    ("gpt-5.5-pro", o_lc(30.0, 180.0, 30.0)),
+    ("gpt-5.4-pro", o_lc(30.0, 180.0, 30.0)),
+    ("gpt-5.2-pro", o(21.0, 168.0, 21.0)),
+    ("gpt-5-pro", o(15.0, 120.0, 15.0)),
+    ("o3-pro", o(20.0, 80.0, 20.0)),
 ];
 
 /// OpenAI bills a request whose whole context (fresh + cached input) exceeds
