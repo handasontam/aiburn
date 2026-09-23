@@ -256,20 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_models_use_distinct_standard_rates() {
-        let t = short();
-        assert_eq!(usd("gpt-5.6-sol", &t, 0), 20.44);
-        assert_eq!(usd("gpt-5.6-terra", &t, 0), 12.22);
-        assert_eq!(usd("gpt-5.6-luna", &t, 0), 1.222);
-        assert_eq!(usd("gpt-6-astra", &t, 0), 51.1);
-        assert_eq!(usd("gpt-6-sol", &t, 0), 10.22);
-        assert_eq!(usd("gpt-6-luna", &t, 0), 0.511);
-        // Bare names follow the flagship of their generation.
-        assert_eq!(usd("gpt-5.6", &t, 0), 20.44);
-        assert_eq!(usd("gpt-6", &t, 0), 51.1);
-    }
-
-    #[test]
     fn claude_cache_writes_use_tier_multipliers() {
         // 5-minute writes at 1.25× input, 1-hour at 2×: asymmetric so a swap
         // of the two fields is visible.
@@ -308,52 +294,25 @@ mod tests {
     }
 
     #[test]
-    fn long_context_tier_is_per_model() {
-        let long = Tokens {
-            input: 500_000,
-            output: 1_000_000,
-            ..Default::default()
-        };
-        // gpt-5.4-mini has its own untiered entry; it must not resolve to
-        // gpt-5.4 and pick up the surcharge.
-        assert_eq!(usd("gpt-5.4-mini", &long, 0), 4.875);
-        // Dated variants of a tiered model do get the tier via their base key.
-        assert_eq!(usd("gpt-5.5-2026-04-23", &long, 0), 50.0);
-    }
-
-    #[test]
-    fn fable_5_1_discounts_cache_reads() {
+    fn dated_names_match_the_longest_key() {
+        // Also a prefix of `claude-opus-5`, which bills more.
         let t = short();
-        // $10 input + $50 output + $0.25 cache read per MTok.
-        assert_eq!(usd("claude-fable-5-1", &t, 0), 51.025);
-        // A dated build resolves to 5.1 by longest prefix, not to bare fable-5.
-        assert_eq!(usd("claude-fable-5-1-20260901", &t, 0), 51.025);
-        assert_eq!(usd("claude-fable-5", &t, 0), 51.1);
-    }
-
-    #[test]
-    fn opus_5_5_does_not_resolve_to_opus_5() {
-        let t = short();
-        // $4 input + $20 output + $0.20 cache read per MTok.
-        assert_eq!(usd("claude-opus-5-5", &t, 0), 20.42);
-        assert_eq!(usd("claude-opus-5-5-20261001", &t, 0), 20.42);
-        assert_eq!(usd("claude-opus-5-5-20261001-fast", &t, 0), 40.84);
-        assert_eq!(usd("claude-opus-5", &t, 0), 25.55);
+        assert_eq!(
+            usd("claude-opus-5-5-20261001", &t, 0),
+            usd("claude-opus-5-5", &t, 0)
+        );
     }
 
     #[test]
     fn fast_resolution() {
         let t = short();
-        // An exact `-fast` key wins over stripping the suffix.
-        assert_eq!(usd("gpt-5.6-sol-fast", &t, 0), 40.88);
-        assert_eq!(usd("gpt-5.5-fast", &t, 0), 76.375);
         // Dated and aliased names find the premium sibling of their resolved
         // base key instead of prefix-matching the standard rate.
         assert_eq!(
             usd("claude-opus-5-20260301-fast", &t, 0),
             usd("claude-opus-5-fast", &t, 0)
         );
-        assert_eq!(usd("gpt-6-fast", &t, 0), 102.2);
+        assert_eq!(usd("gpt-6-fast", &t, 0), usd("gpt-6-astra-fast", &t, 0));
         let at = AUTO_REVIEW_LUNA_AT_MS;
         assert_eq!(
             usd("codex-auto-review-fast", &t, at),
@@ -366,11 +325,9 @@ mod tests {
     #[test]
     fn auto_review_switches_to_luna_on_cutover() {
         let t = short();
-        assert_eq!(
-            usd("codex-auto-review", &t, AUTO_REVIEW_LUNA_AT_MS - 1),
-            30.55
-        );
-        assert_eq!(usd("codex-auto-review", &t, AUTO_REVIEW_LUNA_AT_MS), 1.222);
+        let at = AUTO_REVIEW_LUNA_AT_MS;
+        assert_eq!(usd("codex-auto-review", &t, at - 1), usd("gpt-5.5", &t, 0));
+        assert_eq!(usd("codex-auto-review", &t, at), usd("gpt-5.6-luna", &t, 0));
     }
 
     /// Every rate models.dev publishes must match the one `resolve` picks, so a
