@@ -1,0 +1,53 @@
+name: pricing drift
+
+# The price table is curated by hand, so a new model can ship billing $0 or
+# prefix-matching an older sibling. This compares it against models.dev daily
+# and keeps one issue open while they disagree. It files an issue rather than
+# committing because a new model often needs an alias or a date rule, not just
+# a row, and prices only reach users with a release anyway.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Built separately so a compile error fails the run instead of being
+      # filed as drift.
+      - run: cargo test --no-run
+      - name: Compare against models.dev
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL https://models.dev/api.json | jq -rf .github/models-dev.jq > models-dev.tsv
+          title='Pricing drift from models.dev'
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if MODELS_DEV_TSV=models-dev.tsv cargo test matches_models_dev -- --ignored > report.txt; then
+            [ -z "$issue" ] || gh issue close "$issue" --comment 'The price table matches models.dev again.'
+            exit 0
+          fi
+          cat report.txt
+          # Any other failure, such as a models.dev schema change, fails the
+          # run instead of filing an empty report.
+          grep -q 'differences from models.dev' report.txt || exit 1
+          {
+            echo "The [daily check]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) found rates in \`src/pricing.rs\` that differ from [models.dev](https://models.dev). Check each against the provider's pricing page before updating the table."
+            echo
+            echo '```text'
+            sed -n '/differences from models.dev/,/^note:/p' report.txt | sed '$d'
+            echo '```'
+          } > body.md
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi

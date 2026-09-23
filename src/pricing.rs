@@ -362,4 +362,92 @@ mod tests {
         );
         assert_eq!(usd("codex-auto-review", &t, AUTO_REVIEW_LUNA_AT_MS), 1.222);
     }
+
+    /// Every rate models.dev publishes must match the one `resolve` picks, so a
+    /// missing row, a prefix match onto the wrong model, or a missing
+    /// long-context tier all surface. Needs a fresh snapshot, so it is ignored
+    /// here and run daily by `pricing-drift.yml`; locally:
+    ///
+    /// ```sh
+    /// curl -fsSL https://models.dev/api.json | jq -rf .github/models-dev.jq > /tmp/models-dev.tsv
+    /// MODELS_DEV_TSV=/tmp/models-dev.tsv cargo test matches_models_dev -- --ignored
+    /// ```
+    #[test]
+    #[ignore]
+    fn matches_models_dev() {
+        let path = std::env::var("MODELS_DEV_TSV").expect("MODELS_DEV_TSV names the jq output");
+        let tsv = std::fs::read_to_string(path).expect("read MODELS_DEV_TSV");
+        let mut drift = Vec::new();
+        for line in tsv.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            let [provider, model, input, output, cache_read, cache_write, lc_size, lc_input, lc_output, lc_cache_read] =
+                f[..]
+            else {
+                panic!("malformed row: {line}");
+            };
+            let num = |s: &str| {
+                (!s.is_empty()).then(|| {
+                    s.parse::<f64>()
+                        .unwrap_or_else(|_| panic!("bad number in: {line}"))
+                })
+            };
+            let Some(r) = resolve(model, 0) else {
+                drift.push(format!("{model}: not priced"));
+                continue;
+            };
+            // A rate models.dev leaves empty (Pro models have no cached-input
+            // rate) has nothing to compare against.
+            let mut pairs = vec![
+                ("input", r.input, num(input)),
+                ("output", r.output, num(output)),
+                ("cache read", r.cache_read, num(cache_read)),
+            ];
+            match provider {
+                "anthropic" => pairs.push(("cache write", r.cache_write, num(cache_write))),
+                // Codex logs carry no cache-write tokens, so that rate is never billed.
+                "openai" => {}
+                _ => panic!("unexpected provider in: {line}"),
+            }
+            // models.dev publishes no long-context tier for Fast modes.
+            if !model.ends_with("-fast") {
+                match (r.long_context, num(lc_size)) {
+                    (false, None) => {}
+                    (true, None) => {
+                        drift.push(format!("{model}: long-context tier, models.dev has none"))
+                    }
+                    (false, Some(_)) => {
+                        drift.push(format!("{model}: no long-context tier, models.dev has one"))
+                    }
+                    (true, size) => {
+                        let (mi, mo, mc) = LONG_CONTEXT_MULT;
+                        pairs.extend([
+                            (
+                                "long-context threshold",
+                                LONG_CONTEXT_THRESHOLD as f64,
+                                size,
+                            ),
+                            ("long-context input", r.input * mi, num(lc_input)),
+                            ("long-context output", r.output * mo, num(lc_output)),
+                            (
+                                "long-context cache read",
+                                r.cache_read * mc,
+                                num(lc_cache_read),
+                            ),
+                        ]);
+                    }
+                }
+            }
+            for (what, ours, theirs) in pairs {
+                if let Some(theirs) = theirs.filter(|t| (ours - t).abs() > 1e-9) {
+                    drift.push(format!("{model}: {what} {ours}, models.dev {theirs}"));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "{} differences from models.dev:\n{}",
+            drift.len(),
+            drift.join("\n")
+        );
+    }
 }
