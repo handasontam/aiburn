@@ -7,7 +7,9 @@ name: pricing drift
 # a row, and prices only reach users with a release anyway.
 on:
   schedule:
-    - cron: '0 6 * * *'
+    # Off the top of the hour, when GitHub's scheduler is busiest and delays
+    # or drops runs.
+    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:
