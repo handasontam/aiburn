@@ -54,8 +54,9 @@ const fn o_lc(input: f64, output: f64, cache_read: f64) -> Rate {
 
 /// Curated public list pricing for the models Claude Code and Codex actually
 /// emit. Premium (Fast/Priority) builds are `-fast` keys next to their base
-/// model — OpenAI's are 2× Standard (2.5× for GPT-5.5), matching ccusage's
-/// multipliers. See `resolve` for how a logged name matches these keys.
+/// model, tabulated rather than derived because OpenAI's premium is not one
+/// multiple (1.75× for o3, 2.5× for GPT-5.5). See `resolve` for how a logged
+/// name matches these keys.
 static TABLE: &[(&str, Rate)] = &[
     // --- Anthropic / Claude Code ---
     // Opus 5.5 is cheaper than Opus 5 and reads cache at 5% of input; its own
@@ -113,18 +114,24 @@ static TABLE: &[(&str, Rate)] = &[
     ("gpt-5.3", o(1.75, 14.0, 0.175)),
     ("gpt-5.2-codex", o(1.75, 14.0, 0.175)),
     ("gpt-5.2", o(1.75, 14.0, 0.175)),
+    ("gpt-5.2-fast", o(3.5, 28.0, 0.35)),
     ("gpt-5.1-codex-mini", o(0.25, 2.0, 0.025)),
     ("gpt-5.1-codex-max", o(1.25, 10.0, 0.125)),
     ("gpt-5.1-codex", o(1.25, 10.0, 0.125)),
     ("gpt-5.1", o(1.25, 10.0, 0.125)),
+    ("gpt-5.1-fast", o(2.5, 20.0, 0.25)),
     ("gpt-5-codex", o(1.25, 10.0, 0.125)),
     ("gpt-5-mini", o(0.25, 2.0, 0.025)),
+    ("gpt-5-mini-fast", o(0.45, 3.6, 0.045)),
     ("gpt-5-nano", o(0.05, 0.4, 0.005)),
     ("gpt-5", o(1.25, 10.0, 0.125)),
+    ("gpt-5-fast", o(2.5, 20.0, 0.25)),
     ("codex-mini-latest", o(1.5, 6.0, 0.375)),
     ("codex-mini", o(1.5, 6.0, 0.375)),
     ("o3", o(2.0, 8.0, 0.5)),
+    ("o3-fast", o(3.5, 14.0, 0.875)),
     ("o4-mini", o(1.1, 4.4, 0.275)),
+    ("o4-mini-fast", o(2.0, 8.0, 0.5)),
     // Pro models publish no cached-input discount, so cached tokens bill as
     // fresh input; their own keys keep them off the base model's rate.
     ("gpt-5.5-pro", o_lc(30.0, 180.0, 30.0)),
@@ -321,7 +328,7 @@ mod tests {
             usd("gpt-5.6-luna-fast", &t, at)
         );
         // A base with no premium key keeps its own rate rather than $0.
-        assert_eq!(usd("gpt-5.2-fast", &t, 0), usd("gpt-5.2", &t, 0));
+        assert_eq!(usd("gpt-5.4-nano-fast", &t, 0), usd("gpt-5.4-nano", &t, 0));
     }
 
     #[test]
