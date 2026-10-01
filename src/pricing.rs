@@ -85,6 +85,8 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-3-opus", c(15.0, 75.0)),
     ("claude-3-haiku", c(0.25, 1.25)),
     // --- OpenAI / Codex ---
+    ("gpt-6.1-sol", o_lc(2.0, 10.0, 0.1)),
+    ("gpt-6.1-sol-fast", o_lc(4.0, 20.0, 0.2)),
     ("gpt-6-astra", o_lc(10.0, 50.0, 1.0)),
     ("gpt-6-astra-fast", o_lc(20.0, 100.0, 2.0)),
     ("gpt-6-sol", o_lc(2.0, 10.0, 0.2)),
