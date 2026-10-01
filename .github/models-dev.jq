@@ -4,11 +4,12 @@
 # the long-context tier's size, input, output and cache read (empty if none).
 # Only tool-calling, text-only models: embeddings, image and audio models never
 # show up in agent logs. OpenAI models older than Codex (2025-04-16) can't be in
-# its logs either.
+# its logs either, nor can the Daybreak cyber models Codex doesn't offer.
 [.anthropic, .openai][] as $p
 | $p.models[]
 | select(.tool_call and .modalities.output == ["text"])
 | select($p.id == "anthropic" or .release_date >= "2025-04-16")
+| select(.id | startswith("gpt-daybreak-") | not)
 | .id as $id
 | (.cost.tiers // [] | map(select(.tier.type == "context")) | first) as $lc
 | ([$p.id, $id, .cost.input, .cost.output, .cost.cache_read, .cost.cache_write,
