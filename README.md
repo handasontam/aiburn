@@ -103,8 +103,9 @@ instead of a smaller total.
 
 Costs are recomputed from token counts with a built-in, pinned public pricing
 table, including Claude's 5-minute and 1-hour cache tiers and per-model cache
-rates (Fable 5.1 reads cache at $0.25/MTok and Opus 5.5 at $0.20/MTok, not the
-usual 10% of input).
+rates (Fable 5.1 reads cache at $0.25/MTok, Opus 5.5 at $0.20/MTok and Sonnet
+5.5 at $0.10/MTok, not the usual 10% of input). A Haiku 5.5 request whose prompt,
+cache reads and writes included, exceeds 100K tokens is billed entirely at 5×.
 Claude Code figures match ccusage's to the cent; ccusage's headline total will
 still be higher if it also finds OpenCode, Gemini, or other agent logs that
 aiburn does not read. Codex logs carry no authoritative cost, so aiburn uses

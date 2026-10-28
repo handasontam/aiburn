@@ -9,10 +9,37 @@ pub struct Rate {
     pub cache_write: f64,    // 5-minute cache creation
     pub cache_write_1h: f64, // 1-hour cache creation
     pub cache_read: f64,
-    /// OpenAI two-stage model: requests over `LONG_CONTEXT_THRESHOLD` bill at
-    /// `LONG_CONTEXT_MULT` times these rates.
-    pub long_context: bool,
+    pub long_context: Option<LongContext>,
 }
+
+/// A request whose whole context (fresh + cached input, cache writes
+/// included) exceeds `threshold` tokens bills entirely at these multiples of
+/// the base rates — a per-request switch, not a marginal breakpoint.
+#[derive(Clone, Copy)]
+pub struct LongContext {
+    pub threshold: u64,
+    pub input: f64, // also scales cache writes
+    pub output: f64,
+    pub cache_read: f64,
+}
+
+/// Every tiered OpenAI model in models.dev's 2026-10-28 snapshot uses exactly
+/// this tier, so `o_lc` derives it rather than tabulating rates. Matches
+/// ccusage.
+const OPENAI_LONG_CONTEXT: LongContext = LongContext {
+    threshold: 272_000,
+    input: 2.0,
+    output: 1.5,
+    cache_read: 2.0,
+};
+
+/// Haiku 5.5 is the one Claude model priced by prompt length.
+const HAIKU_5_5_LONG_CONTEXT: LongContext = LongContext {
+    threshold: 100_000,
+    input: 5.0,
+    output: 5.0,
+    cache_read: 5.0,
+};
 
 /// Anthropic: 5m cache write = 1.25× input, 1h = 2× input, cache read = 0.1×.
 const fn c(input: f64, output: f64) -> Rate {
@@ -28,7 +55,7 @@ const fn c_read(input: f64, output: f64, cache_read: f64) -> Rate {
         cache_write: input * 1.25,
         cache_write_1h: input * 2.0,
         cache_read,
-        long_context: false,
+        long_context: None,
     }
 }
 
@@ -40,14 +67,14 @@ const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
         cache_write: 0.0,
         cache_write_1h: 0.0,
         cache_read,
-        long_context: false,
+        long_context: None,
     }
 }
 
 /// OpenAI model with a long-context tier (every GPT-5.4+ flagship).
 const fn o_lc(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
-        long_context: true,
+        long_context: Some(OPENAI_LONG_CONTEXT),
         ..o(input, output, cache_read)
     }
 }
@@ -84,6 +111,13 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-sonnet-4-5", c(3.0, 15.0)),
     ("claude-sonnet-4", c(3.0, 15.0)),
     ("claude-3-5-sonnet", c(3.0, 15.0)),
+    (
+        "claude-haiku-5-5",
+        Rate {
+            long_context: Some(HAIKU_5_5_LONG_CONTEXT),
+            ..c(0.1, 0.5)
+        },
+    ),
     ("claude-haiku-4-5", c(1.0, 5.0)),
     ("claude-3-5-haiku", c(0.8, 4.0)),
     ("claude-3-opus", c(15.0, 75.0)),
@@ -145,17 +179,6 @@ static TABLE: &[(&str, Rate)] = &[
     ("gpt-5-pro", o(15.0, 120.0, 15.0)),
     ("o3-pro", o(20.0, 80.0, 20.0)),
 ];
-
-/// OpenAI bills a request whose whole context (fresh + cached input) exceeds
-/// this many tokens entirely at a higher tier — a per-request switch, not a
-/// marginal breakpoint. Matches ccusage.
-const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
-
-/// Long-context tier as (input, output, cache-read) multiples of the base
-/// rate. Every tiered OpenAI model in models.dev's 2026-09-05 snapshot uses
-/// exactly these, so the tier is derived rather than tabulated; a model that
-/// breaks the pattern would need its own rates.
-const LONG_CONTEXT_MULT: (f64, f64, f64) = (2.0, 1.5, 2.0);
 
 /// Premium usage is priced through a `-fast` sibling key, so the service tier
 /// is folded into the model name. Idempotent: some logs already carry it.
@@ -233,10 +256,9 @@ pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> (f64, bool) {
         return (0.0, false);
     };
     let context = t.input + t.cache_read + t.cache_write + t.cache_write_1h;
-    let (mi, mo, mc) = if r.long_context && context > LONG_CONTEXT_THRESHOLD {
-        LONG_CONTEXT_MULT
-    } else {
-        (1.0, 1.0, 1.0)
+    let (mi, mo, mc) = match r.long_context {
+        Some(lc) if context > lc.threshold => (lc.input, lc.output, lc.cache_read),
+        _ => (1.0, 1.0, 1.0),
     };
     let usd = (t.input as f64 * r.input * mi
         + t.output as f64 * r.output * mo
@@ -301,10 +323,18 @@ mod tests {
         assert_eq!(usd("gpt-6-astra", &cached, 0), 5.5);
         // Exactly at the threshold stays on the base rate.
         let boundary = Tokens {
-            input: LONG_CONTEXT_THRESHOLD,
+            input: OPENAI_LONG_CONTEXT.threshold,
             ..Default::default()
         };
         assert_eq!(usd("gpt-6-astra", &boundary, 0), 2.72);
+        // Haiku 5.5's tier counts cache writes toward the prompt and scales
+        // them too, which models.dev's snapshot doesn't check.
+        let writes = |n| Tokens {
+            cache_write: n,
+            ..Default::default()
+        };
+        assert_eq!(usd("claude-haiku-5-5", &writes(100_000), 0), 0.0125);
+        assert_eq!(usd("claude-haiku-5-5", &writes(200_000), 0), 0.125);
     }
 
     #[test]
@@ -392,26 +422,21 @@ mod tests {
             // models.dev publishes no long-context tier for Fast modes.
             if !model.ends_with("-fast") {
                 match (r.long_context, num(lc_size)) {
-                    (false, None) => {}
-                    (true, None) => {
+                    (None, None) => {}
+                    (Some(_), None) => {
                         drift.push(format!("{model}: long-context tier, models.dev has none"))
                     }
-                    (false, Some(_)) => {
+                    (None, Some(_)) => {
                         drift.push(format!("{model}: no long-context tier, models.dev has one"))
                     }
-                    (true, size) => {
-                        let (mi, mo, mc) = LONG_CONTEXT_MULT;
+                    (Some(lc), size) => {
                         pairs.extend([
-                            (
-                                "long-context threshold",
-                                LONG_CONTEXT_THRESHOLD as f64,
-                                size,
-                            ),
-                            ("long-context input", r.input * mi, num(lc_input)),
-                            ("long-context output", r.output * mo, num(lc_output)),
+                            ("long-context threshold", lc.threshold as f64, size),
+                            ("long-context input", r.input * lc.input, num(lc_input)),
+                            ("long-context output", r.output * lc.output, num(lc_output)),
                             (
                                 "long-context cache read",
-                                r.cache_read * mc,
+                                r.cache_read * lc.cache_read,
                                 num(lc_cache_read),
                             ),
                         ]);
