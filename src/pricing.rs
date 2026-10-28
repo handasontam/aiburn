@@ -76,6 +76,9 @@ static TABLE: &[(&str, Rate)] = &[
     // Fable 5.1 reads cache at $0.25/MTok (2.5% of input, not the usual 10%).
     ("claude-fable-5-1", c_read(10.0, 50.0, 0.25)),
     ("claude-fable-5", c(10.0, 50.0)),
+    // Sonnet 5.5 reads cache at 5% of input like Opus 5.5; its own key keeps
+    // it from prefix-matching `claude-sonnet-5`.
+    ("claude-sonnet-5-5", c_read(2.0, 10.0, 0.1)),
     ("claude-sonnet-5", c(2.0, 10.0)),
     ("claude-sonnet-4-6", c(3.0, 15.0)),
     ("claude-sonnet-4-5", c(3.0, 15.0)),
@@ -88,6 +91,8 @@ static TABLE: &[(&str, Rate)] = &[
     // --- OpenAI / Codex ---
     ("gpt-6.1-sol", o_lc(2.0, 10.0, 0.1)),
     ("gpt-6.1-sol-fast", o_lc(4.0, 20.0, 0.2)),
+    ("gpt-6.1-terra", o_lc(1.0, 5.0, 0.05)),
+    ("gpt-6.1-terra-fast", o_lc(2.0, 10.0, 0.1)),
     ("gpt-6-astra", o_lc(10.0, 50.0, 1.0)),
     ("gpt-6-astra-fast", o_lc(20.0, 100.0, 2.0)),
     ("gpt-6-sol", o_lc(2.0, 10.0, 0.2)),
