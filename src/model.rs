@@ -62,7 +62,4 @@ pub struct UsageRow {
     pub project: String,
     pub model: String,
     pub tokens: Tokens,
-    pub cost: f64,
-    /// False when no pricing was found for the model (cost is 0).
-    pub priced: bool,
 }

@@ -8,6 +8,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Agent, UsageRow};
+use crate::pricing::cost_for;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Command {
@@ -121,12 +122,14 @@ pub struct Report {
 }
 
 impl Report {
-    /// Fold one usage record in (respecting the query filter), then let it drop.
+    /// Price one usage record and fold it in (respecting the query filter),
+    /// then let it drop.
     pub fn add(&mut self, q: &Query, r: UsageRow) {
         if !q.accepts(&r.date) {
             return;
         }
-        if !r.priced {
+        let cost = cost_for(&r.model, &r.tokens, r.timestamp);
+        if cost.is_none() {
             self.footer.unpriced_tokens += r.tokens.total();
             self.footer.unpriced_models.insert(r.model.clone());
         }
@@ -134,7 +137,7 @@ impl Report {
         let g = Group {
             period: q.period(&r),
             agent: r.agent,
-            cost: r.cost,
+            cost: cost.unwrap_or(0.0),
             input: r.tokens.input,
             output: r.tokens.output,
             cache: r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h,
@@ -204,8 +207,6 @@ mod tests {
                 input,
                 ..Default::default()
             },
-            cost: 1.0,
-            priced: true,
         }
     }
 
@@ -237,8 +238,8 @@ mod tests {
         r.add(&q, row(Agent::Claude, "2026-01-01", "m", 1));
         r.add(&q, row(Agent::Codex, "2026-01-01", "m", 2));
         assert_eq!(r.groups.len(), 2);
-        assert_eq!(r.agent_total(Agent::Claude), (1.0, 1));
-        assert_eq!(r.agent_total(Agent::Codex), (1.0, 2));
+        assert_eq!(r.agent_total(Agent::Claude).1, 1);
+        assert_eq!(r.agent_total(Agent::Codex).1, 2);
     }
 
     #[test]
@@ -281,9 +282,9 @@ mod tests {
         let q = daily(None, None);
         let rows = || {
             [
-                row(Agent::Codex, "2026-01-01", "a", 10),
-                row(Agent::Codex, "2026-01-01", "b", 20),
-                row(Agent::Claude, "2026-01-02", "a", 30),
+                row(Agent::Codex, "2026-01-01", "gpt-5.2", 10),
+                row(Agent::Codex, "2026-01-01", "unpriced", 20),
+                row(Agent::Claude, "2026-01-02", "claude-opus-5", 30),
             ]
         };
         let mut one = Report::default();

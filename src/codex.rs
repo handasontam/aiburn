@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use crate::agg::{Query, Report};
 use crate::json::{contains, P};
 use crate::model::{Agent, ServiceTier, Tokens, UsageRow};
-use crate::pricing::{cost_for, with_fast_suffix};
+use crate::pricing::with_fast_suffix;
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
 
@@ -329,7 +329,6 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
         if service_tier == ServiceTier::Fast {
             m = with_fast_suffix(m);
         }
-        let (cost, priced) = cost_for(&m, &tokens, ts_ms);
         report.add(
             q,
             UsageRow {
@@ -341,8 +340,6 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
                 project: project.clone(),
                 model: m,
                 tokens,
-                cost,
-                priced,
             },
         );
     });

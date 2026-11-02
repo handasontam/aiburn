@@ -249,12 +249,11 @@ fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
     Some(find(&format!("{base_key}-fast")).map_or(base_rate, |(_, r)| r))
 }
 
-/// Returns (cost in USD, whether pricing was found). `at_ms` is when the usage
-/// happened so date-based model aliases remain historically reproducible.
-pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> (f64, bool) {
-    let Some(r) = resolve(model, at_ms) else {
-        return (0.0, false);
-    };
+/// Cost in USD, or None when the model has no known pricing. `at_ms` is when
+/// the usage happened so date-based model aliases remain historically
+/// reproducible.
+pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> Option<f64> {
+    let r = resolve(model, at_ms)?;
     let context = t.input + t.cache_read + t.cache_write + t.cache_write_1h;
     let (mi, mo, mc) = match r.long_context {
         Some(lc) if context > lc.threshold => (lc.input, lc.output, lc.cache_read),
@@ -266,7 +265,7 @@ pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> (f64, bool) {
         + t.cache_write_1h as f64 * r.cache_write_1h * mi
         + t.cache_read as f64 * r.cache_read * mc)
         / 1_000_000.0;
-    (usd, true)
+    Some(usd)
 }
 
 #[cfg(test)]
@@ -286,8 +285,7 @@ mod tests {
 
     /// Cost in USD rounded to the micro-dollar so decimal literals compare exactly.
     fn usd(model: &str, t: &Tokens, at_ms: i64) -> f64 {
-        let (cost, priced) = cost_for(model, t, at_ms);
-        assert!(priced, "{model} should be priced");
+        let cost = cost_for(model, t, at_ms).unwrap_or_else(|| panic!("{model} should be priced"));
         (cost * 1e6).round() / 1e6
     }
 
