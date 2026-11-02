@@ -48,16 +48,17 @@ impl Query {
     /// column.
     fn key(&self, r: &UsageRow) -> String {
         match self.command {
-            Command::Monthly => format!("{}|{}|{}", r.month, r.agent.as_str(), r.model),
+            Command::Monthly => format!("{}|{}|{}", &r.date[..7], r.agent.as_str(), r.model),
             Command::Session => format!("{}|{}", r.agent.as_str(), r.session_id),
             Command::Daily => format!("{}|{}|{}", r.date, r.agent.as_str(), r.model),
         }
     }
 
     /// Human-facing period label for the group (date / month / session id).
+    /// A month is the YYYY-MM prefix of the local date.
     fn period(&self, r: &UsageRow) -> String {
         match self.command {
-            Command::Monthly => r.month.clone(),
+            Command::Monthly => r.date[..7].to_string(),
             Command::Session => r.session_id.clone(),
             Command::Daily => r.date.clone(),
         }
@@ -199,7 +200,6 @@ mod tests {
             agent,
             timestamp: 0,
             date: date.to_string(),
-            month: date[..7].to_string(),
             session_id: "s".to_string(),
             project: String::new(),
             model: model.to_string(),

@@ -39,8 +39,8 @@ fn local_ymd(secs: i64) -> (i64, u32, u32) {
     )
 }
 
-/// Parse an RFC3339/`Z` timestamp → (epoch ms, local YYYY-MM-DD, local YYYY-MM).
-pub fn parse_ts(ts: &str) -> Option<(i64, String, String)> {
+/// Parse an RFC3339/`Z` timestamp → (epoch ms, local YYYY-MM-DD).
+pub fn parse_ts(ts: &str) -> Option<(i64, String)> {
     let b = ts.as_bytes();
     if b.len() < 19 {
         return None;
@@ -64,11 +64,7 @@ pub fn parse_ts(ts: &str) -> Option<(i64, String, String)> {
     let secs = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s;
     let ms = secs * 1000 + frac;
     let (ly, lm, ld) = local_ymd(secs);
-    Some((
-        ms,
-        format!("{ly:04}-{lm:02}-{ld:02}"),
-        format!("{ly:04}-{lm:02}"),
-    ))
+    Some((ms, format!("{ly:04}-{lm:02}-{ld:02}")))
 }
 
 /// Format epoch milliseconds as a UTC RFC3339 string (matches JS toISOString).

@@ -261,7 +261,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
         // its first real request may finish within the replay gap.
         if e.typ.as_deref() == Some("session_meta") {
             if (!seen_meta && e.has_fork_parent) || (seen_meta && e.session_id != own_session_id) {
-                if let Some((ms, _, _)) = e.timestamp.as_deref().and_then(parse_ts) {
+                if let Some((ms, _)) = e.timestamp.as_deref().and_then(parse_ts) {
                     replay_last_ms = Some(ms);
                 }
             }
@@ -293,7 +293,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
             return;
         }
         let Some(ts) = e.timestamp else { return };
-        let Some((ts_ms, date, month)) = parse_ts(&ts) else {
+        let Some((ts_ms, date)) = parse_ts(&ts) else {
             return;
         };
 
@@ -335,7 +335,6 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
                 agent: Agent::Codex,
                 timestamp: ts_ms,
                 date,
-                month,
                 session_id: session_id.clone(),
                 project: project.clone(),
                 model: m,

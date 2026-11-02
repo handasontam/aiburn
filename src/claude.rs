@@ -163,7 +163,7 @@ fn parse_file(path: &Path) -> Parsed {
             _ => model,
         };
         let Some(ts) = e.timestamp else { return };
-        let Some((ts_ms, date, month)) = parse_ts(&ts) else {
+        let Some((ts_ms, date)) = parse_ts(&ts) else {
             return;
         };
 
@@ -185,7 +185,6 @@ fn parse_file(path: &Path) -> Parsed {
             agent: Agent::Claude,
             timestamp: ts_ms,
             date,
-            month,
             session_id: e.session_id.unwrap_or_else(|| stem.clone()),
             project: e
                 .cwd

@@ -56,8 +56,6 @@ pub struct UsageRow {
     pub timestamp: i64,
     /// YYYY-MM-DD in local time.
     pub date: String,
-    /// YYYY-MM in local time.
-    pub month: String,
     pub session_id: String,
     pub project: String,
     pub model: String,
