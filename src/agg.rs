@@ -4,6 +4,7 @@
 //! each event as it is parsed; Claude first keeps one row per streamed
 //! message, so its peak is bounded by distinct messages, not events.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Agent, UsageRow};
@@ -62,7 +63,6 @@ impl Query {
     }
 }
 
-#[derive(Default)]
 pub struct Group {
     pub period: String,
     pub agent: Agent,
@@ -78,16 +78,39 @@ pub struct Group {
     pub last_date: String,
 }
 
+impl Group {
+    pub fn tokens(&self) -> u64 {
+        self.input + self.output + self.cache
+    }
+
+    /// Fold another partial of the same group in: one usage record, or
+    /// another thread's sum in the parallel reduce.
+    fn absorb(&mut self, o: Group) {
+        self.cost += o.cost;
+        self.input += o.input;
+        self.output += o.output;
+        self.cache += o.cache;
+        self.models.extend(o.models);
+        // The project label follows the most recent event. Rows arrive in
+        // no fixed order (Claude's dedup map, the parallel reduce), so
+        // "first seen" would make the label differ from run to run.
+        if !o.project.is_empty() && (self.project.is_empty() || o.last_ts > self.last_ts) {
+            self.project = o.project;
+        }
+        if o.last_ts > self.last_ts || self.last_date.is_empty() {
+            self.last_ts = o.last_ts;
+            self.last_date = o.last_date;
+        }
+    }
+}
+
+/// What the groups can't say: per-agent totals are summed from the groups.
 #[derive(Default)]
 pub struct Footer {
-    pub claude_cost: f64,
-    pub codex_cost: f64,
-    pub claude_tokens: u64,
-    pub codex_tokens: u64,
     pub unpriced_tokens: u64,
     pub unpriced_models: BTreeSet<String>,
     /// Files that could not be opened or read to the end; their usage is
-    /// missing from every number above.
+    /// missing from every number in the report.
     pub unreadable_files: usize,
 }
 
@@ -99,81 +122,57 @@ pub struct Report {
 
 impl Report {
     /// Fold one usage record in (respecting the query filter), then let it drop.
-    pub fn add(&mut self, q: &Query, r: &UsageRow) {
+    pub fn add(&mut self, q: &Query, r: UsageRow) {
         if !q.accepts(&r.date) {
             return;
         }
-        let tok = r.tokens.total();
-        match r.agent {
-            Agent::Claude => {
-                self.footer.claude_cost += r.cost;
-                self.footer.claude_tokens += tok;
-            }
-            Agent::Codex => {
-                self.footer.codex_cost += r.cost;
-                self.footer.codex_tokens += tok;
-            }
-        }
         if !r.priced {
-            self.footer.unpriced_tokens += tok;
+            self.footer.unpriced_tokens += r.tokens.total();
             self.footer.unpriced_models.insert(r.model.clone());
         }
-
-        let g = self.groups.entry(q.key(r)).or_insert_with(|| Group {
-            period: q.period(r),
+        let key = q.key(&r);
+        let g = Group {
+            period: q.period(&r),
             agent: r.agent,
-            ..Default::default()
-        });
-        g.cost += r.cost;
-        g.input += r.tokens.input;
-        g.output += r.tokens.output;
-        g.cache += r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h;
-        if !g.models.contains(&r.model) {
-            g.models.insert(r.model.clone());
-        }
-        // The project label follows the most recent event. Rows arrive in
-        // no fixed order (Claude's dedup map, the parallel reduce), so
-        // "first seen" would make the label differ from run to run.
-        if !r.project.is_empty() && (g.project.is_empty() || r.timestamp > g.last_ts) {
-            g.project = r.project.clone();
-        }
-        if r.timestamp > g.last_ts || g.last_date.is_empty() {
-            g.last_ts = r.timestamp;
-            g.last_date = r.date.clone();
+            cost: r.cost,
+            input: r.tokens.input,
+            output: r.tokens.output,
+            cache: r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h,
+            models: BTreeSet::from([r.model]),
+            project: r.project,
+            last_ts: r.timestamp,
+            last_date: r.date,
+        };
+        self.merge_group(key, g);
+    }
+
+    fn merge_group(&mut self, key: String, g: Group) {
+        match self.groups.entry(key) {
+            Entry::Vacant(e) => {
+                e.insert(g);
+            }
+            Entry::Occupied(mut e) => e.get_mut().absorb(g),
         }
     }
 
     /// Combine two reports (used as the rayon reduce operator).
     pub fn merged(mut self, other: Report) -> Report {
         let f = &mut self.footer;
-        f.claude_cost += other.footer.claude_cost;
-        f.codex_cost += other.footer.codex_cost;
-        f.claude_tokens += other.footer.claude_tokens;
-        f.codex_tokens += other.footer.codex_tokens;
         f.unpriced_tokens += other.footer.unpriced_tokens;
         f.unpriced_models.extend(other.footer.unpriced_models);
         f.unreadable_files += other.footer.unreadable_files;
-
-        for (k, og) in other.groups {
-            let g = self.groups.entry(k).or_insert_with(|| Group {
-                period: og.period.clone(),
-                agent: og.agent,
-                ..Default::default()
-            });
-            g.cost += og.cost;
-            g.input += og.input;
-            g.output += og.output;
-            g.cache += og.cache;
-            g.models.extend(og.models);
-            if !og.project.is_empty() && (g.project.is_empty() || og.last_ts > g.last_ts) {
-                g.project = og.project;
-            }
-            if og.last_ts > g.last_ts || g.last_date.is_empty() {
-                g.last_ts = og.last_ts;
-                g.last_date = og.last_date;
-            }
+        for (k, g) in other.groups {
+            self.merge_group(k, g);
         }
         self
+    }
+
+    /// (cost, tokens) summed over one agent's groups.
+    pub fn agent_total(&self, agent: Agent) -> (f64, u64) {
+        self.groups
+            .values()
+            .filter(|g| g.agent == agent)
+            .fold((0.0, 0), |(c, t), g| (c + g.cost, t + g.tokens()))
     }
 
     /// Groups in display order: the map's key order (period, agent, model),
@@ -225,7 +224,7 @@ mod tests {
         let q = daily(Some("2026-01-02"), Some("2026-01-03"));
         let mut r = Report::default();
         for d in ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"] {
-            r.add(&q, &row(Agent::Codex, d, "m", 1));
+            r.add(&q, row(Agent::Codex, d, "m", 1));
         }
         let periods: Vec<&str> = r.groups.values().map(|g| g.period.as_str()).collect();
         assert_eq!(periods, ["2026-01-02", "2026-01-03"]);
@@ -235,10 +234,11 @@ mod tests {
     fn same_day_and_model_split_per_agent() {
         let q = daily(None, None);
         let mut r = Report::default();
-        r.add(&q, &row(Agent::Claude, "2026-01-01", "m", 1));
-        r.add(&q, &row(Agent::Codex, "2026-01-01", "m", 1));
+        r.add(&q, row(Agent::Claude, "2026-01-01", "m", 1));
+        r.add(&q, row(Agent::Codex, "2026-01-01", "m", 2));
         assert_eq!(r.groups.len(), 2);
-        assert_eq!((r.footer.claude_cost, r.footer.codex_cost), (1.0, 1.0));
+        assert_eq!(r.agent_total(Agent::Claude), (1.0, 1));
+        assert_eq!(r.agent_total(Agent::Codex), (1.0, 2));
     }
 
     #[test]
@@ -248,18 +248,19 @@ mod tests {
             since: None,
             until: None,
         };
-        let mut early = row(Agent::Claude, "2026-01-01", "m", 1);
-        early.timestamp = 100;
-        early.project = "old".to_string();
-        let mut late = row(Agent::Claude, "2026-01-02", "m", 1);
-        late.timestamp = 200;
-        late.project = "new".to_string();
+        let at = |timestamp, date, project: &str| UsageRow {
+            timestamp,
+            project: project.to_string(),
+            ..row(Agent::Claude, date, "m", 1)
+        };
+        let early = || at(100, "2026-01-01", "old");
+        let late = || at(200, "2026-01-02", "new");
         let latest = |r: &Report| {
             let g = r.groups.values().next().unwrap();
             (g.project.clone(), g.last_date.clone())
         };
         let want = ("new".to_string(), "2026-01-02".to_string());
-        for order in [[&early, &late], [&late, &early]] {
+        for order in [[early(), late()], [late(), early()]] {
             let mut r = Report::default();
             for x in order {
                 r.add(&q, x);
@@ -268,8 +269,8 @@ mod tests {
         }
         // The same rule when the two events were folded on different threads.
         let (mut a, mut b) = (Report::default(), Report::default());
-        a.add(&q, &early);
-        b.add(&q, &late);
+        a.add(&q, early());
+        b.add(&q, late());
         assert_eq!(latest(&a.merged(b)), want);
     }
 
@@ -278,15 +279,19 @@ mod tests {
         // `merged` is the parallel reduce; a footer or group field it forgets
         // under-reports silently, so compare against folding serially.
         let q = daily(None, None);
-        let rows = [
-            row(Agent::Codex, "2026-01-01", "a", 10),
-            row(Agent::Codex, "2026-01-01", "b", 20),
-            row(Agent::Claude, "2026-01-02", "a", 30),
-        ];
+        let rows = || {
+            [
+                row(Agent::Codex, "2026-01-01", "a", 10),
+                row(Agent::Codex, "2026-01-01", "b", 20),
+                row(Agent::Claude, "2026-01-02", "a", 30),
+            ]
+        };
         let mut one = Report::default();
         let (mut left, mut right) = (Report::default(), Report::default());
-        for (i, r) in rows.iter().enumerate() {
+        for r in rows() {
             one.add(&q, r);
+        }
+        for (i, r) in rows().into_iter().enumerate() {
             if i.is_multiple_of(2) {
                 left.add(&q, r)
             } else {
@@ -296,10 +301,12 @@ mod tests {
         let m = left.merged(right);
         assert_eq!(m.groups.len(), one.groups.len());
         for (k, g) in &one.groups {
-            assert_eq!(m.groups[k].input, g.input, "{k}");
+            assert_eq!(
+                (m.groups[k].input, m.groups[k].cost),
+                (g.input, g.cost),
+                "{k}"
+            );
         }
-        assert_eq!(m.footer.claude_tokens, one.footer.claude_tokens);
-        assert_eq!(m.footer.codex_tokens, one.footer.codex_tokens);
-        assert_eq!(m.footer.codex_cost, one.footer.codex_cost);
+        assert_eq!(m.footer.unpriced_tokens, one.footer.unpriced_tokens);
     }
 }

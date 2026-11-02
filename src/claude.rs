@@ -236,11 +236,11 @@ pub fn load(files: &[PathBuf], q: &Query) -> Report {
             }
         }
         for row in p.keyless {
-            report.add(q, &row);
+            report.add(q, row);
         }
     }
     for row in keyed.into_values() {
-        report.add(q, &row);
+        report.add(q, row);
     }
     report
 }

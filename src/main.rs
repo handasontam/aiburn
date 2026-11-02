@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
-use agg::{Command, Footer, Group, Query, Report};
+use agg::{Command, Group, Query, Report};
 use model::Agent;
 use util::{commas, cost, human, render_table, Paint};
 
@@ -250,7 +250,7 @@ fn render_session(
                     g.project.clone()
                 },
                 models,
-                tok(g.input + g.output + g.cache, exact),
+                tok(g.tokens(), exact),
                 cost(g.cost),
             ]
         })
@@ -281,30 +281,33 @@ fn render_session(
 }
 
 fn render_footer(
-    f: &Footer,
+    report: &Report,
     exact: bool,
     elapsed_ms: u128,
     file_count: usize,
     paint: &Paint,
 ) -> String {
+    let f = &report.footer;
+    let (claude_cost, claude_tokens) = report.agent_total(Agent::Claude);
+    let (codex_cost, codex_tokens) = report.agent_total(Agent::Codex);
     let mut lines = vec![
         String::new(),
         format!(
             "{}  {:>11}   {} tokens",
             paint.cyan("Claude"),
-            cost(f.claude_cost),
-            tok(f.claude_tokens, exact)
+            cost(claude_cost),
+            tok(claude_tokens, exact)
         ),
         format!(
             "{}  {:>11}   {} tokens",
             paint.green("Codex "),
-            cost(f.codex_cost),
-            tok(f.codex_tokens, exact)
+            cost(codex_cost),
+            tok(codex_tokens, exact)
         ),
         format!(
             "{}  {}",
             paint.bold("Total "),
-            paint.bold(&format!("{:>11}", cost(f.claude_cost + f.codex_cost)))
+            paint.bold(&format!("{:>11}", cost(claude_cost + codex_cost)))
         ),
     ];
     if f.unpriced_tokens > 0 {
@@ -435,7 +438,7 @@ fn run() -> i32 {
     let _ = writeln!(
         out,
         "{}",
-        render_footer(&report.footer, o.exact, elapsed, file_count, &paint)
+        render_footer(&report, o.exact, elapsed, file_count, &paint)
     );
     0
 }

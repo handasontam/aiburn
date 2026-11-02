@@ -332,7 +332,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
         let (cost, priced) = cost_for(&m, &tokens, ts_ms);
         report.add(
             q,
-            &UsageRow {
+            UsageRow {
                 agent: Agent::Codex,
                 timestamp: ts_ms,
                 date,
@@ -499,7 +499,7 @@ mod tests {
                 &own,
             ],
         );
-        assert_eq!(report.footer.codex_tokens, 420);
+        assert_eq!(report.agent_total(Agent::Codex).1, 420);
     }
 
     #[test]
@@ -531,7 +531,7 @@ mod tests {
                 &own,
             ]);
             let report = run("fork-leading-history", &lines);
-            assert_eq!(report.footer.codex_tokens, 420);
+            assert_eq!(report.agent_total(Agent::Codex).1, 420);
             assert_eq!(report.groups.len(), 1);
             let g = report.groups.values().next().unwrap();
             assert_eq!((g.input, g.cache, g.output), (300, 100, 20));
@@ -549,7 +549,7 @@ mod tests {
                 &own,
             ],
         );
-        assert_eq!(report.footer.codex_tokens, 420);
+        assert_eq!(report.agent_total(Agent::Codex).1, 420);
     }
 
     #[test]
@@ -570,7 +570,7 @@ mod tests {
                 &resumed,
             ],
         );
-        assert_eq!(report.footer.codex_tokens, 1_470);
+        assert_eq!(report.agent_total(Agent::Codex).1, 1_470);
     }
 
     #[test]
@@ -606,7 +606,7 @@ mod tests {
                 &t2,
             ],
         );
-        assert_eq!(report.footer.codex_tokens, 3_150);
+        assert_eq!(report.agent_total(Agent::Codex).1, 3_150);
         let g = report.groups.values().next().unwrap();
         assert_eq!((g.input, g.cache, g.output), (2_500, 500, 150));
     }
