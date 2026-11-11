@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use agg::{Command, Group, Query, Report};
 use model::Agent;
+use time::Day;
 use util::{commas, cost, human, render_table, Paint};
 
 const HELP: &str = "aiburn — fast Claude Code + Codex usage & cost
@@ -45,8 +46,8 @@ struct Options {
     all: bool,
     exact: bool,
     agent: Option<Agent>,
-    since: Option<String>,
-    until: Option<String>,
+    since: Option<Day>,
+    until: Option<Day>,
 }
 
 fn parse_args() -> Result<Options, i32> {
@@ -98,23 +99,11 @@ fn parse_args() -> Result<Options, i32> {
     Ok(o)
 }
 
-/// `--since`/`--until` values are string-compared against local YYYY-MM-DD
-/// dates, so anything else would silently include everything or nothing.
-fn date_arg(flag: &str, value: Option<&String>) -> Result<String, i32> {
-    let shaped = |v: &str| {
-        v.len() == 10
-            && v.bytes().enumerate().all(|(i, b)| match i {
-                4 | 7 => b == b'-',
-                _ => b.is_ascii_digit(),
-            })
-    };
-    match value {
-        Some(v) if shaped(v) => Ok(v.clone()),
-        _ => {
-            eprintln!("aiburn: {flag} expects a date as YYYY-MM-DD");
-            Err(1)
-        }
-    }
+fn date_arg(flag: &str, value: Option<&String>) -> Result<Day, i32> {
+    value.and_then(|v| Day::parse(v)).ok_or_else(|| {
+        eprintln!("aiburn: {flag} expects a date as YYYY-MM-DD");
+        1
+    })
 }
 
 /// Display name for a model: drop the `claude-` vendor prefix and any trailing
@@ -236,13 +225,8 @@ fn render_session(
         .iter()
         .map(|g| {
             let models = models_cell(g);
-            let last = if g.last_date.is_empty() {
-                "–".to_string()
-            } else {
-                g.last_date.clone()
-            };
             vec![
-                last,
+                g.last_date.as_str().to_string(),
                 g.agent.as_str().to_string(),
                 if g.project.is_empty() {
                     "–".to_string()
@@ -342,12 +326,8 @@ fn json_report(command: &str, groups: &[&Group]) -> String {
     let items: Vec<String> = groups
         .iter()
         .map(|g| {
-            let last = match g.last_ts {
-                0 => "null".to_string(),
-                ms => format!("\"{}\"", time::iso_from_ms(ms)),
-            };
             format!(
-                "    {{\n      \"period\": \"{}\",\n      \"agent\": \"{}\",\n      \"project\": \"{}\",\n      \"models\": [{}],\n      \"input\": {},\n      \"output\": {},\n      \"cache\": {},\n      \"cost\": {:.6},\n      \"lastActive\": {}\n    }}",
+                "    {{\n      \"period\": \"{}\",\n      \"agent\": \"{}\",\n      \"project\": \"{}\",\n      \"models\": [{}],\n      \"input\": {},\n      \"output\": {},\n      \"cache\": {},\n      \"cost\": {:.6},\n      \"lastActive\": \"{}\"\n    }}",
                 esc(&g.period),
                 g.agent.as_str(),
                 esc(&g.project),
@@ -356,7 +336,7 @@ fn json_report(command: &str, groups: &[&Group]) -> String {
                 g.output,
                 g.cache,
                 g.cost,
-                last
+                time::iso_from_ms(g.last_ts)
             )
         })
         .collect();

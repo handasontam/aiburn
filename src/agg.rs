@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Agent, UsageRow};
 use crate::pricing::cost_for;
+use crate::time::Day;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Command {
@@ -21,24 +22,14 @@ pub enum Command {
 /// selection happens upstream by not scanning the other agent's files.
 pub struct Query {
     pub command: Command,
-    pub since: Option<String>,
-    pub until: Option<String>,
+    pub since: Option<Day>,
+    pub until: Option<Day>,
 }
 
 impl Query {
-    /// Inclusive on both ends, comparing local YYYY-MM-DD strings.
-    fn accepts(&self, date: &str) -> bool {
-        if let Some(s) = &self.since {
-            if date < s.as_str() {
-                return false;
-            }
-        }
-        if let Some(u) = &self.until {
-            if date > u.as_str() {
-                return false;
-            }
-        }
-        true
+    fn accepts(&self, date: &Day) -> bool {
+        self.since.as_ref().is_none_or(|s| date >= s)
+            && self.until.as_ref().is_none_or(|u| date <= u)
     }
 
     /// Unique key per group; the map's order is the display order. Every
@@ -48,19 +39,17 @@ impl Query {
     /// column.
     fn key(&self, r: &UsageRow) -> String {
         match self.command {
-            Command::Monthly => format!("{}|{}|{}", &r.date[..7], r.agent.as_str(), r.model),
+            Command::Monthly => format!("{}|{}|{}", r.date.month(), r.agent.as_str(), r.model),
             Command::Session => format!("{}|{}", r.agent.as_str(), r.session_id),
-            Command::Daily => format!("{}|{}|{}", r.date, r.agent.as_str(), r.model),
+            Command::Daily => format!("{}|{}|{}", r.date.as_str(), r.agent.as_str(), r.model),
         }
     }
 
-    /// Human-facing period label for the group (date / month / session id).
-    /// A month is the YYYY-MM prefix of the local date.
     fn period(&self, r: &UsageRow) -> String {
         match self.command {
-            Command::Monthly => r.date[..7].to_string(),
+            Command::Monthly => r.date.month().to_string(),
             Command::Session => r.session_id.clone(),
-            Command::Daily => r.date.clone(),
+            Command::Daily => r.date.as_str().to_string(),
         }
     }
 }
@@ -75,9 +64,7 @@ pub struct Group {
     pub models: BTreeSet<String>,
     pub project: String,
     pub last_ts: i64,
-    /// Local YYYY-MM-DD of the most recent event, so the session table's
-    /// "Last active" agrees with the daily view and `--since`/`--until`.
-    pub last_date: String,
+    pub last_date: Day,
 }
 
 impl Group {
@@ -99,7 +86,7 @@ impl Group {
         if !o.project.is_empty() && (self.project.is_empty() || o.last_ts > self.last_ts) {
             self.project = o.project;
         }
-        if o.last_ts > self.last_ts || self.last_date.is_empty() {
+        if o.last_ts > self.last_ts {
             self.last_ts = o.last_ts;
             self.last_date = o.last_date;
         }
@@ -199,7 +186,7 @@ mod tests {
         UsageRow {
             agent,
             timestamp: 0,
-            date: date.to_string(),
+            date: Day::parse(date).unwrap(),
             session_id: "s".to_string(),
             project: String::new(),
             model: model.to_string(),
@@ -213,8 +200,8 @@ mod tests {
     fn daily(since: Option<&str>, until: Option<&str>) -> Query {
         Query {
             command: Command::Daily,
-            since: since.map(str::to_string),
-            until: until.map(str::to_string),
+            since: since.and_then(Day::parse),
+            until: until.and_then(Day::parse),
         }
     }
 
@@ -258,7 +245,7 @@ mod tests {
         let late = || at(200, "2026-01-02", "new");
         let latest = |r: &Report| {
             let g = r.groups.values().next().unwrap();
-            (g.project.clone(), g.last_date.clone())
+            (g.project.clone(), g.last_date.as_str().to_string())
         };
         let want = ("new".to_string(), "2026-01-02".to_string());
         for order in [[early(), late()], [late(), early()]] {

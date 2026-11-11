@@ -1,3 +1,5 @@
+use crate::time::Day;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Claude,
@@ -54,8 +56,7 @@ pub struct UsageRow {
     pub agent: Agent,
     /// Epoch milliseconds.
     pub timestamp: i64,
-    /// YYYY-MM-DD in local time.
-    pub date: String,
+    pub date: Day,
     pub session_id: String,
     pub project: String,
     pub model: String,
