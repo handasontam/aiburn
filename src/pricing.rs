@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::model::Tokens;
+use crate::model::{ServiceTier, Tokens};
 
 /// Rates in USD per 1,000,000 tokens.
 pub struct Rate {
@@ -184,13 +184,12 @@ static TABLE: &[(&str, Rate)] = &[
     ("o3-pro", o(20.0, 80.0, 20.0)),
 ];
 
-/// Premium usage is priced through a `-fast` sibling key, so the service tier
-/// is folded into the model name. Idempotent: some logs already carry it.
-pub fn with_fast_suffix(model: String) -> String {
-    if model.ends_with("-fast") {
-        model
-    } else {
-        model + "-fast"
+/// Premium usage is priced through a `-fast` sibling key. Some logged names
+/// already carry the suffix.
+pub fn tiered_model(model: String, tier: ServiceTier) -> String {
+    match tier {
+        ServiceTier::Fast if !model.ends_with("-fast") => model + "-fast",
+        _ => model,
     }
 }
 

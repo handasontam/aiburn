@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -5,8 +6,8 @@ use rayon::prelude::*;
 
 use crate::agg::{Query, Report};
 use crate::json::{contains, P};
-use crate::model::{Agent, Tokens, UsageRow};
-use crate::pricing::with_fast_suffix;
+use crate::model::{Agent, ServiceTier, Tokens, UsageRow};
+use crate::pricing::tiered_model;
 use crate::time::parse_ts;
 use crate::util::{basename, file_stem, find_jsonl, for_each_line, home};
 
@@ -25,8 +26,7 @@ struct Extract {
     cache_5m: u64,
     cache_1h: u64,
     cache_read: u64,
-    /// `usage.speed`: "standard" or "fast" (absent on older logs).
-    speed: Option<String>,
+    speed: ServiceTier,
     has_usage: bool,
 }
 
@@ -41,7 +41,7 @@ fn parse_usage(p: &mut P, e: &mut Extract) {
             "output_tokens" => e.output = p.u64().unwrap_or(0),
             "cache_creation_input_tokens" => e.cache_creation_flat = p.u64().unwrap_or(0),
             "cache_read_input_tokens" => e.cache_read = p.u64().unwrap_or(0),
-            "speed" => e.speed = p.str_opt(),
+            "speed" => e.speed = ServiceTier::from_name(&p.str_opt().unwrap_or_default()),
             "cache_creation" => {
                 if p.enter_obj() {
                     while let Some(kk) = p.obj_next() {
@@ -93,16 +93,25 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
 }
 
 struct Parsed {
-    /// One winner per (message id, request id), already deduped within this
-    /// file (input/cache are constant across a message's streamed snapshots;
-    /// output grows, so keep the largest).
     keyed: HashMap<String, UsageRow>,
-    /// Assistant rows lacking an id/req pair — never deduped.
     keyless: Vec<UsageRow>,
     unreadable: bool,
 }
 
-/// Existing Claude Code `projects` directories to scan.
+/// A streamed message is logged once per chunk under the same (message id,
+/// request id) with constant input and growing output; the largest is final.
+fn keep_largest(keyed: &mut HashMap<String, UsageRow>, key: String, row: UsageRow) {
+    match keyed.entry(key) {
+        Entry::Occupied(mut e) if e.get().tokens.output < row.tokens.output => {
+            e.insert(row);
+        }
+        Entry::Occupied(_) => {}
+        Entry::Vacant(e) => {
+            e.insert(row);
+        }
+    }
+}
+
 fn claude_dirs() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(env) = std::env::var("CLAUDE_CONFIG_DIR") {
@@ -153,22 +162,15 @@ fn parse_file(path: &Path) -> Parsed {
             return;
         }
         let model = match e.model {
-            Some(m) if m != "<synthetic>" => m,
+            Some(m) if m != "<synthetic>" => tiered_model(m, e.speed),
             _ => return,
-        };
-        // Fast mode is the same model billed at a premium; as its own `-fast`
-        // row it prices correctly instead of inflating the standard one.
-        let model = match e.speed.as_deref() {
-            Some("fast") => with_fast_suffix(model),
-            _ => model,
         };
         let Some(ts) = e.timestamp else { return };
         let Some((ts_ms, date)) = parse_ts(&ts) else {
             return;
         };
 
-        // Cache creation splits into 5-minute and 1-hour tiers (1.25× and 2×
-        // input). Fall back to the flat field as 5-minute when absent.
+        // Older logs have only the flat field, which is all 5-minute writes.
         let (cw5, cw1h) = if e.cache_5m != 0 || e.cache_1h != 0 {
             (e.cache_5m, e.cache_1h)
         } else {
@@ -195,19 +197,8 @@ fn parse_file(path: &Path) -> Parsed {
             tokens,
         };
 
-        // A streamed assistant message is logged repeatedly under the same
-        // (message id, request id): input/cache stay constant while output
-        // grows, so keep the record with the largest output (the final one).
         match (e.msg_id, e.request_id) {
-            (Some(id), Some(req)) => {
-                let k = format!("{id}::{req}");
-                match out.keyed.get(&k) {
-                    Some(prev) if prev.tokens.output >= row.tokens.output => {}
-                    _ => {
-                        out.keyed.insert(k, row);
-                    }
-                }
-            }
+            (Some(id), Some(req)) => keep_largest(&mut out.keyed, format!("{id}::{req}"), row),
             _ => out.keyless.push(row),
         }
     });
@@ -217,19 +208,13 @@ fn parse_file(path: &Path) -> Parsed {
 
 pub fn load(files: &[PathBuf], q: &Query) -> Report {
     let partials: Vec<Parsed> = files.par_iter().map(|f| parse_file(f)).collect();
-    // Dedup across files (resumed sessions can re-log the same message), then
-    // fold the winners in. The map is bounded by distinct message count.
+    // Resumed sessions can re-log the same message in another file.
     let mut keyed: HashMap<String, UsageRow> = HashMap::new();
     let mut report = Report::default();
     for p in partials {
         report.footer.unreadable_files += p.unreadable as usize;
         for (k, row) in p.keyed {
-            match keyed.get(&k) {
-                Some(prev) if prev.tokens.output >= row.tokens.output => {}
-                _ => {
-                    keyed.insert(k, row);
-                }
-            }
+            keep_largest(&mut keyed, k, row);
         }
         for row in p.keyless {
             report.add(q, row);
