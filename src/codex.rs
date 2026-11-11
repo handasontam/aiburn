@@ -320,8 +320,8 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
 
         let tokens = Tokens {
             input: last.input - cached,
-            output: last.output, // already includes reasoning_output_tokens
-            cache_write: 0,
+            output: last.output,
+            cache_write_5m: 0,
             cache_write_1h: 0,
             cache_read: cached,
         };
@@ -333,7 +333,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
             q,
             UsageRow {
                 agent: Agent::Codex,
-                timestamp: ts_ms,
+                at_ms: ts_ms,
                 date,
                 session_id: session_id.clone(),
                 project: project.clone(),

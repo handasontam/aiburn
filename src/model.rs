@@ -1,6 +1,6 @@
 use crate::time::Day;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Agent {
     Claude,
     Codex,
@@ -34,28 +34,24 @@ impl ServiceTier {
 
 #[derive(Default)]
 pub struct Tokens {
-    /// Non-cached input tokens (billed at input rate).
+    /// Excludes cache reads, which Codex logs count as input.
     pub input: u64,
-    /// Output tokens (includes reasoning tokens for Codex).
+    /// Includes Codex reasoning tokens.
     pub output: u64,
-    /// 5-minute cache-creation tokens (Claude; billed at 1.25× input).
-    pub cache_write: u64,
-    /// 1-hour cache-creation tokens (Claude; billed at 2× input).
+    pub cache_write_5m: u64,
     pub cache_write_1h: u64,
-    /// Cache-read tokens (billed at the discounted cache rate).
     pub cache_read: u64,
 }
 
 impl Tokens {
     pub fn total(&self) -> u64 {
-        self.input + self.output + self.cache_write + self.cache_write_1h + self.cache_read
+        self.input + self.output + self.cache_write_5m + self.cache_write_1h + self.cache_read
     }
 }
 
 pub struct UsageRow {
     pub agent: Agent,
-    /// Epoch milliseconds.
-    pub timestamp: i64,
+    pub at_ms: i64,
     pub date: Day,
     pub session_id: String,
     pub project: String,

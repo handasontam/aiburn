@@ -177,13 +177,13 @@ fn parse_file(path: &Path) -> Parsed {
         let tokens = Tokens {
             input: e.input,
             output: e.output,
-            cache_write: cw5,
+            cache_write_5m: cw5,
             cache_write_1h: cw1h,
             cache_read: e.cache_read,
         };
         let row = UsageRow {
             agent: Agent::Claude,
-            timestamp: ts_ms,
+            at_ms: ts_ms,
             date,
             session_id: e.session_id.unwrap_or_else(|| stem.clone()),
             project: e

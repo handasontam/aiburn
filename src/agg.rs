@@ -32,19 +32,6 @@ impl Query {
             && self.until.as_ref().is_none_or(|u| date <= u)
     }
 
-    /// Unique key per group; the map's order is the display order. Every
-    /// group is scoped to a single agent so that Claude and Codex get
-    /// separate rows/totals. Daily/monthly rows are further split per raw
-    /// model; a session stays one row, listing its models in the Models
-    /// column.
-    fn key(&self, r: &UsageRow) -> String {
-        match self.command {
-            Command::Monthly => format!("{}|{}|{}", r.date.month(), r.agent.as_str(), r.model),
-            Command::Session => format!("{}|{}", r.agent.as_str(), r.session_id),
-            Command::Daily => format!("{}|{}|{}", r.date.as_str(), r.agent.as_str(), r.model),
-        }
-    }
-
     fn period(&self, r: &UsageRow) -> String {
         match self.command {
             Command::Monthly => r.date.month().to_string(),
@@ -53,6 +40,10 @@ impl Query {
         }
     }
 }
+
+/// (period, agent, model); a session keeps its models in one group. The map's
+/// order is the display order.
+type Key = (String, Agent, String);
 
 pub struct Group {
     pub period: String,
@@ -105,7 +96,7 @@ pub struct Footer {
 
 #[derive(Default)]
 pub struct Report {
-    pub groups: BTreeMap<String, Group>,
+    pub groups: BTreeMap<Key, Group>,
     pub footer: Footer,
 }
 
@@ -116,28 +107,33 @@ impl Report {
         if !q.accepts(&r.date) {
             return;
         }
-        let cost = cost_for(&r.model, &r.tokens, r.timestamp);
+        let cost = cost_for(&r.model, &r.tokens, r.at_ms);
         if cost.is_none() {
             self.footer.unpriced_tokens += r.tokens.total();
             self.footer.unpriced_models.insert(r.model.clone());
         }
-        let key = q.key(&r);
+        let period = q.period(&r);
+        let model = match q.command {
+            Command::Session => String::new(),
+            Command::Daily | Command::Monthly => r.model.clone(),
+        };
+        let key = (period.clone(), r.agent, model);
         let g = Group {
-            period: q.period(&r),
+            period,
             agent: r.agent,
             cost: cost.unwrap_or(0.0),
             input: r.tokens.input,
             output: r.tokens.output,
-            cache: r.tokens.cache_read + r.tokens.cache_write + r.tokens.cache_write_1h,
+            cache: r.tokens.cache_read + r.tokens.cache_write_5m + r.tokens.cache_write_1h,
             models: BTreeSet::from([r.model]),
             project: r.project,
-            last_ts: r.timestamp,
+            last_ts: r.at_ms,
             last_date: r.date,
         };
         self.merge_group(key, g);
     }
 
-    fn merge_group(&mut self, key: String, g: Group) {
+    fn merge_group(&mut self, key: Key, g: Group) {
         match self.groups.entry(key) {
             Entry::Vacant(e) => {
                 e.insert(g);
@@ -185,7 +181,7 @@ mod tests {
     fn row(agent: Agent, date: &str, model: &str, input: u64) -> UsageRow {
         UsageRow {
             agent,
-            timestamp: 0,
+            at_ms: 0,
             date: Day::parse(date).unwrap(),
             session_id: "s".to_string(),
             project: String::new(),
@@ -236,8 +232,8 @@ mod tests {
             since: None,
             until: None,
         };
-        let at = |timestamp, date, project: &str| UsageRow {
-            timestamp,
+        let at = |at_ms, date, project: &str| UsageRow {
+            at_ms,
             project: project.to_string(),
             ..row(Agent::Claude, date, "m", 1)
         };
@@ -292,7 +288,7 @@ mod tests {
             assert_eq!(
                 (m.groups[k].input, m.groups[k].cost),
                 (g.input, g.cost),
-                "{k}"
+                "{k:?}"
             );
         }
         assert_eq!(m.footer.unpriced_tokens, one.footer.unpriced_tokens);

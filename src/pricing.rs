@@ -6,8 +6,8 @@ use crate::model::Tokens;
 pub struct Rate {
     pub input: f64,
     pub output: f64,
-    pub cache_write: f64,    // 5-minute cache creation
-    pub cache_write_1h: f64, // 1-hour cache creation
+    pub cache_write_5m: f64,
+    pub cache_write_1h: f64,
     pub cache_read: f64,
     pub long_context: Option<LongContext>,
 }
@@ -52,7 +52,7 @@ const fn c_read(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
-        cache_write: input * 1.25,
+        cache_write_5m: input * 1.25,
         cache_write_1h: input * 2.0,
         cache_read,
         long_context: None,
@@ -64,7 +64,7 @@ const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
-        cache_write: 0.0,
+        cache_write_5m: 0.0,
         cache_write_1h: 0.0,
         cache_read,
         long_context: None,
@@ -258,14 +258,14 @@ fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
 /// reproducible.
 pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> Option<f64> {
     let r = resolve(model, at_ms)?;
-    let context = t.input + t.cache_read + t.cache_write + t.cache_write_1h;
+    let context = t.input + t.cache_read + t.cache_write_5m + t.cache_write_1h;
     let (mi, mo, mc) = match r.long_context {
         Some(lc) if context > lc.threshold => (lc.input, lc.output, lc.cache_read),
         _ => (1.0, 1.0, 1.0),
     };
     let usd = (t.input as f64 * r.input * mi
         + t.output as f64 * r.output * mo
-        + t.cache_write as f64 * r.cache_write * mi
+        + t.cache_write_5m as f64 * r.cache_write_5m * mi
         + t.cache_write_1h as f64 * r.cache_write_1h * mi
         + t.cache_read as f64 * r.cache_read * mc)
         / 1_000_000.0;
@@ -298,7 +298,7 @@ mod tests {
         // 5-minute writes at 1.25× input, 1-hour at 2×: asymmetric so a swap
         // of the two fields is visible.
         let t = Tokens {
-            cache_write: 1_000_000,
+            cache_write_5m: 1_000_000,
             cache_write_1h: 1_000_000,
             ..Default::default()
         };
@@ -332,7 +332,7 @@ mod tests {
         // Haiku 5.5's tier counts cache writes toward the prompt and scales
         // them too, which models.dev's snapshot doesn't check.
         let writes = |n| Tokens {
-            cache_write: n,
+            cache_write_5m: n,
             ..Default::default()
         };
         assert_eq!(usd("claude-haiku-5-5", &writes(100_000), 0), 0.0125);
@@ -393,7 +393,7 @@ mod tests {
         let mut drift = Vec::new();
         for line in tsv.lines() {
             let f: Vec<&str> = line.split('\t').collect();
-            let [provider, model, input, output, cache_read, cache_write, lc_size, lc_input, lc_output, lc_cache_read] =
+            let [provider, model, input, output, cache_read, cache_write_5m, lc_size, lc_input, lc_output, lc_cache_read] =
                 f[..]
             else {
                 panic!("malformed row: {line}");
@@ -416,7 +416,7 @@ mod tests {
                 ("cache read", r.cache_read, num(cache_read)),
             ];
             match provider {
-                "anthropic" => pairs.push(("cache write", r.cache_write, num(cache_write))),
+                "anthropic" => pairs.push(("cache write", r.cache_write_5m, num(cache_write_5m))),
                 // Codex logs carry no cache-write tokens, so that rate is never billed.
                 "openai" => {}
                 _ => panic!("unexpected provider in: {line}"),
