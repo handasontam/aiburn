@@ -59,7 +59,6 @@ pub fn file_stem(path: &Path) -> String {
 
 // ---- formatting ----------------------------------------------------------
 
-/// Group an integer with thousands separators.
 pub fn commas(n: u64) -> String {
     let s = n.to_string();
     let bytes = s.as_bytes();
@@ -74,8 +73,6 @@ pub fn commas(n: u64) -> String {
     out
 }
 
-/// Compact token count: `3.36B`, `50.4M`, `944K`, `56`. Precision tapers so
-/// the string stays ~4 chars: 0 decimals ≥100, 1 decimal ≥10, else 2.
 pub fn human(n: u64) -> String {
     let f = n as f64;
     let (v, suffix) = if f >= 1e12 {
@@ -99,7 +96,6 @@ pub fn human(n: u64) -> String {
     format!("{s}{suffix}")
 }
 
-/// Format a dollar amount as `$1,234.56`.
 pub fn cost(f: f64) -> String {
     let neg = f < 0.0;
     let cents = (f.abs() * 100.0).round() as u64;
@@ -204,4 +200,19 @@ pub fn render_table(
         lines.push(paint.bold(&fmt_row(t)));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_stay_about_four_characters() {
+        assert_eq!(human(56), "56");
+        assert_eq!(human(944_000), "944K");
+        assert_eq!(human(50_400_000), "50.4M");
+        assert_eq!(human(3_360_000_000), "3.36B");
+        assert_eq!(cost(1234.555), "$1,234.56");
+        assert_eq!(commas(1_000_000), "1,000,000");
+    }
 }

@@ -106,8 +106,6 @@ fn date_arg(flag: &str, value: Option<&String>) -> Result<Day, i32> {
     })
 }
 
-/// Display name for a model: drop the `claude-` vendor prefix and any trailing
-/// `-YYYYMMDD` date so the Models column reads `opus-4-8`, `haiku-4-5`, `gpt-5.5`.
 fn short_model(m: &str) -> String {
     let m = m.strip_prefix("claude-").unwrap_or(m);
     match m.rsplit_once('-') {
@@ -118,7 +116,6 @@ fn short_model(m: &str) -> String {
     }
 }
 
-/// Token count formatter: compact (K/M/B/T) by default, full with `--exact`.
 fn tok(n: u64, exact: bool) -> String {
     if exact {
         commas(n)
@@ -127,9 +124,6 @@ fn tok(n: u64, exact: bool) -> String {
     }
 }
 
-/// Compact, comma-joined short model names for a group. If the full list is too
-/// wide, keep whole names that fit and summarize the rest as `+N` (never cuts a
-/// name mid-word).
 fn models_cell(g: &Group) -> String {
     let names: Vec<String> = g.models.iter().map(|m| short_model(m)).collect();
     let full = names.join(", ");
@@ -441,5 +435,18 @@ mod tests {
         assert!(!ok("july"));
         assert!(!ok("2026-1-2"));
         assert!(!ok("--codex"));
+    }
+
+    #[test]
+    fn readme_usage_matches_help() {
+        let usage = &HELP[HELP.find("Commands:").unwrap()..];
+        assert!(include_str!("../README.md").contains(usage));
+    }
+
+    #[test]
+    fn short_model_drops_vendor_and_date_only() {
+        assert_eq!(short_model("claude-opus-4-8-20260101"), "opus-4-8");
+        assert_eq!(short_model("claude-haiku-4-5"), "haiku-4-5");
+        assert_eq!(short_model("gpt-5.5"), "gpt-5.5");
     }
 }
