@@ -91,19 +91,15 @@ fn parse_payload(p: &mut P, e: &mut Extract) {
     }
 }
 
-/// Codex base directory: `$CODEX_HOME`, default `~/.codex`.
 fn codex_home() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| home().map(|h| h.join(".codex")))
 }
 
-/// Fallback tier for events that never recorded one: the top-level
-/// `service_tier` from config.toml, otherwise Standard. `[profiles.*]` tiers
-/// are deliberately ignored (the log doesn't say which profile was active;
-/// ccusage scans them too and can over-price inactive profiles). Note this
-/// reads today's config, so re-tiering it re-prices old events that carry no
-/// explicit tier of their own.
+/// For events that never recorded a tier. `[profiles.*]` tiers are ignored
+/// because the log doesn't say which profile was active. This reads today's
+/// config, so changing it re-prices old events that carry no tier.
 fn configured_service_tier() -> ServiceTier {
     codex_home()
         .and_then(|base| fs::read_to_string(base.join("config.toml")).ok())
@@ -143,7 +139,6 @@ fn parse_line(bytes: &[u8]) -> Option<Extract> {
     Some(e)
 }
 
-/// Existing Codex session directories to scan.
 fn codex_dirs() -> Vec<PathBuf> {
     match codex_home() {
         Some(b) => [b.join("sessions"), b.join("archived_sessions")]
@@ -176,12 +171,10 @@ fn uuid_from_name(path: &Path) -> Option<String> {
     None
 }
 
-/// One session per rollout file, identified by the filename's UUID.
 fn session_id_of(path: &Path) -> String {
     uuid_from_name(path).unwrap_or_else(|| file_stem(path))
 }
 
-/// Saturating per-field difference between cumulative snapshots.
 fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     match prev {
         None => cur,
@@ -193,12 +186,7 @@ fn delta(cur: RawUsage, prev: Option<RawUsage>) -> RawUsage {
     }
 }
 
-/// Usage recorded by one token_count event. Prefer the per-turn
-/// `last_token_usage` — but only when the cumulative totals moved, because
-/// long sessions re-emit unchanged snapshots whose `last` would double-count.
-/// Records without `last` fall back to a saturating cumulative delta, so a
-/// counter reset costs at most one skipped event rather than a re-counted
-/// session. This matches ccusage.
+/// Matches ccusage.
 fn event_usage(
     total: Option<RawUsage>,
     last: Option<RawUsage>,
@@ -215,17 +203,13 @@ fn event_usage(
     usage
 }
 
-/// Longest pause tolerated inside a rollout's replayed history. Forking or
-/// resuming a session rewrites the parent's records into the new file as one
-/// dense burst (tens of milliseconds) stamped at the fork/resume instant,
-/// while the session's own first turn follows a real pause of seconds;
-/// ccusage's fallback uses the same gap cutoff.
+/// Forking or resuming rewrites the parent's records as one burst tens of
+/// milliseconds long; the session's own first turn follows a pause of seconds.
+/// ccusage uses the same cutoff.
 const REPLAY_BURST_GAP_MS: i64 = 1_000;
 
-/// Cheap reject for the bulky record types (message bodies, compaction
-/// summaries) that make up most of a rollout: a record's own `type` sits in
-/// its first bytes, so those never pay for a full-line scan. Anything else
-/// falls through to the exact needle check.
+/// Message bodies and compaction summaries make up most of a rollout; their
+/// `type` sits in the first bytes, so they skip the full-line scan.
 fn wanted_line(line: &[u8]) -> bool {
     let head = &line[..line.len().min(96)];
     if contains(head, b"\"type\":\"response_item\"") || contains(head, b"\"type\":\"compacted\"") {
@@ -242,9 +226,7 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
     let mut service_tier = fallback_tier;
     let mut seen_meta = false;
     let mut own_session_id = None;
-    // Some(ts) while absorbing a replay burst; the timestamp of the last
-    // absorbed record.
-    let mut replay_last_ms: Option<i64> = None;
+    let mut replay_burst_last_ms: Option<i64> = None;
     let mut project = String::new();
     let mut prev_total: Option<RawUsage> = None;
     let mut report = Report::default();
@@ -255,14 +237,10 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
         }
         let Some(e) = parse_line(line) else { return };
 
-        // Forks can replay token events before copying the parent's metadata.
-        // Start absorbing at the child's fork marker or foreign metadata.
-        // Repeated metadata for this same session is an ordinary resume;
-        // its first real request may finish within the replay gap.
         if e.typ.as_deref() == Some("session_meta") {
             if (!seen_meta && e.has_fork_parent) || (seen_meta && e.session_id != own_session_id) {
                 if let Some((ms, _)) = e.timestamp.as_deref().and_then(parse_ts) {
-                    replay_last_ms = Some(ms);
+                    replay_burst_last_ms = Some(ms);
                 }
             }
             if !seen_meta {
@@ -297,14 +275,11 @@ fn build_report(path: &Path, session_id: String, q: &Query, fallback_tier: Servi
             return;
         };
 
-        // Inside a replay burst: absorb the event as the parent's baseline.
-        // The first event past the pause is the session's own turn and falls
-        // through to be counted.
-        if let Some(prev) = replay_last_ms {
+        if let Some(prev) = replay_burst_last_ms {
             if ts_ms - prev > REPLAY_BURST_GAP_MS {
-                replay_last_ms = None;
+                replay_burst_last_ms = None;
             } else {
-                replay_last_ms = Some(ts_ms);
+                replay_burst_last_ms = Some(ts_ms);
                 if let Some(total) = e.total {
                     prev_total = Some(total);
                 }
@@ -353,9 +328,7 @@ pub fn load(files: &[PathBuf], q: &Query) -> Report {
     if files.is_empty() {
         return Report::default();
     }
-    // Drop files whose session id already appeared (e.g. a live session
-    // later archived) before aggregating, so the parallel reduce is a pure
-    // sum with no double counting.
+    // A live session later archived appears twice.
     let mut sorted: Vec<&PathBuf> = files.iter().collect();
     sorted.sort();
     let mut seen: HashSet<String> = HashSet::new();

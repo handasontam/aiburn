@@ -1,6 +1,5 @@
-//! Minimal, allocation-light JSON scanner. We only extract a handful of scalar
-//! fields per line and `skip` everything else (including the huge `content`
-//! arrays) without building a value tree, so memory stays bounded.
+//! Extracts a few scalars per line and skips the rest, including huge
+//! `content` arrays, without building a value tree.
 
 pub struct P<'a> {
     b: &'a [u8],
@@ -72,7 +71,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// Parse a string value; skip and return None if the value isn't a string.
     pub fn str_opt(&mut self) -> Option<String> {
         self.ws();
         if self.peek() == b'"' {
@@ -83,7 +81,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// Parse an integer value; skip and return None otherwise.
     pub fn u64(&mut self) -> Option<u64> {
         self.ws();
         let c = self.peek();
@@ -177,10 +174,8 @@ impl<'a> P<'a> {
         None
     }
 
-    /// A string's bytes as written, escapes included, borrowed from the line.
-    /// Object keys are only ever compared against plain ASCII field names and
-    /// an escaped spelling of one never occurs, so keys skip the unescape and
-    /// the copy that `string` does for values.
+    /// Escapes left in: keys are only compared against plain ASCII names, so
+    /// they skip the unescape and copy that values pay.
     fn raw_str(&mut self) -> Option<&'a str> {
         if self.peek() != b'"' {
             return None;
@@ -210,7 +205,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// Consume one JSON value of any type, discarding it.
     pub fn skip(&mut self) {
         self.ws();
         match self.peek() {
@@ -277,7 +271,6 @@ impl<'a> P<'a> {
     }
 }
 
-/// Substring test (first-byte scan then compare); replaces memchr offline.
 pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
     let n = needle.len();
     if n == 0 {
@@ -304,7 +297,6 @@ pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
     false
 }
 
-/// Escape a string for JSON output.
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     for c in s.chars() {

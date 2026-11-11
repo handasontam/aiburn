@@ -102,18 +102,15 @@ instead of a smaller total.
 ## Cost accuracy
 
 Costs are recomputed from token counts with a built-in, pinned public pricing
-table, including Claude's 5-minute and 1-hour cache tiers and per-model cache
-rates (Fable 5.1 reads cache at $0.25/MTok, Fable 5.2 and Opus 5.5 at
-$0.20/MTok and Sonnet 5.5 at $0.10/MTok, not the usual 10% of input). A Haiku 5.5 request whose prompt,
-cache reads and writes included, exceeds 100K tokens is billed entirely at 5×.
+table, including Claude's 5-minute and 1-hour cache tiers, per-model cache
+rates and prompt-length tiers, checked daily against
+[models.dev](https://models.dev).
 Claude Code figures match ccusage's to the cent; ccusage's headline total will
 still be higher if it also finds OpenCode, Gemini, or other agent logs that
 aiburn does not read. Codex logs carry no authoritative cost, so aiburn uses
 public list pricing: explicit `priority`/`fast` events use the matching Fast
 rate, missing tiers follow the top-level Codex config, and unknown tiers fall
-back to Standard. A Codex request whose whole context (fresh plus cached input)
-exceeds 272K tokens is billed entirely at OpenAI's long-context tier, as
-ccusage does.
+back to Standard.
 
 Two details worth knowing:
 

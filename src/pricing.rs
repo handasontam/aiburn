@@ -171,7 +171,6 @@ pub fn tiered_model(model: String, tier: ServiceTier) -> String {
 
 const AUTO_REVIEW_LUNA_AT_MS: i64 = days_from_civil(2026, 7, 30) * 86_400_000;
 
-/// Bare aliases and virtual model names → a concrete pricing key.
 fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
     match model {
         "opus" => Some("claude-opus-5"),
@@ -205,8 +204,6 @@ fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
         .map(|(k, r)| (*k, r))
 }
 
-/// Exact key, then alias, then longest prefix (dated/regional variants). A
-/// `-fast` name resolves its base first, then takes that key's `-fast` sibling.
 fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
     let key: Cow<str> = if model.bytes().any(|b| b.is_ascii_uppercase()) {
         Cow::Owned(model.to_ascii_lowercase())

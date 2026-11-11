@@ -2,7 +2,6 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-/// Recursively collect every *.jsonl file under `root` (missing dir → []).
 pub fn find_jsonl(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -25,10 +24,8 @@ pub fn find_jsonl(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Stream a file line by line, reusing one buffer so peak memory stays bounded
-/// to a single line regardless of file size (files here reach ~150 MB). Err
-/// means the file could not be opened or a read failed partway, so some or
-/// all of its lines were never delivered.
+/// Memory stays bounded to one line; files reach ~150 MB. Err means some or
+/// all lines were never delivered.
 pub fn for_each_line<F: FnMut(&[u8])>(path: &Path, mut f: F) -> std::io::Result<()> {
     let mut reader = BufReader::with_capacity(1 << 16, File::open(path)?);
     let mut buf = Vec::with_capacity(8192);
@@ -45,7 +42,6 @@ pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Last path segment of a slash-separated string.
 pub fn basename(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()
 }
@@ -56,8 +52,6 @@ pub fn file_stem(path: &Path) -> String {
         .unwrap_or("")
         .to_string()
 }
-
-// ---- formatting ----------------------------------------------------------
 
 pub fn commas(n: u64) -> String {
     let s = n.to_string();
@@ -107,8 +101,6 @@ pub fn cost(f: f64) -> String {
     )
 }
 
-// ---- color ----------------------------------------------------------------
-
 pub struct Paint {
     on: bool,
 }
@@ -141,7 +133,6 @@ impl Paint {
     }
 }
 
-/// Render a fixed-width table. Header and optional total row are emphasized.
 pub fn render_table(
     headers: &[&str],
     rows: &[Vec<String>],

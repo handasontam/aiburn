@@ -130,7 +130,7 @@ fn claude_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Derive a friendly project name from Claude's `-Users-me-code-foo` folders.
+/// Claude names folders like `-Users-me-code-foo`.
 fn project_from_folder(path: &Path) -> String {
     let folder = path
         .parent()

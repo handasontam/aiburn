@@ -63,17 +63,12 @@ impl Group {
         self.input + self.output + self.cache
     }
 
-    /// Fold another partial of the same group in: one usage record, or
-    /// another thread's sum in the parallel reduce.
     fn absorb(&mut self, o: Group) {
         self.cost += o.cost;
         self.input += o.input;
         self.output += o.output;
         self.cache += o.cache;
         self.models.extend(o.models);
-        // The project label follows the most recent event. Rows arrive in
-        // no fixed order (Claude's dedup map, the parallel reduce), so
-        // "first seen" would make the label differ from run to run.
         if !o.project.is_empty() && (self.project.is_empty() || o.last_ts > self.last_ts) {
             self.project = o.project;
         }
@@ -84,13 +79,10 @@ impl Group {
     }
 }
 
-/// What the groups can't say: per-agent totals are summed from the groups.
 #[derive(Default)]
 pub struct Footer {
     pub unpriced_tokens: u64,
     pub unpriced_models: BTreeSet<String>,
-    /// Files that could not be opened or read to the end; their usage is
-    /// missing from every number in the report.
     pub unreadable_files: usize,
 }
 
@@ -101,8 +93,6 @@ pub struct Report {
 }
 
 impl Report {
-    /// Price one usage record and fold it in (respecting the query filter),
-    /// then let it drop.
     pub fn add(&mut self, q: &Query, r: UsageRow) {
         if !q.accepts(&r.date) {
             return;
@@ -142,7 +132,6 @@ impl Report {
         }
     }
 
-    /// Combine two reports (used as the rayon reduce operator).
     pub fn merged(mut self, other: Report) -> Report {
         let f = &mut self.footer;
         f.unpriced_tokens += other.footer.unpriced_tokens;
@@ -154,7 +143,6 @@ impl Report {
         self
     }
 
-    /// (cost, tokens) summed over one agent's groups.
     pub fn agent_total(&self, agent: Agent) -> (f64, u64) {
         self.groups
             .values()
@@ -162,8 +150,6 @@ impl Report {
             .fold((0.0, 0), |(c, t), g| (c + g.cost, t + g.tokens()))
     }
 
-    /// Groups in display order: the map's key order (period, agent, model),
-    /// or most recent first for sessions.
     pub fn sorted_groups(&self, command: Command) -> Vec<&Group> {
         let mut v: Vec<&Group> = self.groups.values().collect();
         if command == Command::Session {

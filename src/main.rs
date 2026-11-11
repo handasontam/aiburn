@@ -37,7 +37,6 @@ Options:
   -h, --help             Show this help
   -v, --version          Show version";
 
-/// Session view lists this many most-recent sessions unless `--all`.
 const SESSION_LIMIT: usize = 25;
 
 struct Options {
@@ -150,8 +149,6 @@ fn models_cell(g: &Group) -> String {
 }
 
 fn render_period(groups: &[&Group], label: &str, exact: bool, paint: &Paint) -> String {
-    // Groups are sorted by "period|agent|model", so rows for one period are
-    // adjacent; blank repeated period and agent labels within each block.
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(groups.len());
     let mut prev_period = "";
     let mut prev_agent = None;

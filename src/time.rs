@@ -71,7 +71,6 @@ pub fn parse_ts(ts: &str) -> Option<(i64, Day)> {
     let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
     let (h, mi, s) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
 
-    // Milliseconds: the first three fraction digits, right-padded with zeros.
     let mut frac = 0i64;
     if b.get(19) == Some(&b'.') {
         for k in 20..23 {
@@ -89,7 +88,6 @@ pub fn parse_ts(ts: &str) -> Option<(i64, Day)> {
     Some((ms, Day(format!("{ly:04}-{lm:02}-{ld:02}"))))
 }
 
-/// Format epoch milliseconds as a UTC RFC3339 string (matches JS toISOString).
 pub fn iso_from_ms(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let millis = ms.rem_euclid(1000);

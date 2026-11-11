@@ -1,8 +1,6 @@
 name: release
 
-# Build per-platform wheels (each carries the compiled `aiburn` binary) and
-# publish them to PyPI whenever a v* tag is pushed. After this runs once,
-# `uvx aiburn` works on any macOS / Linux machine.
+# Per-platform wheels, each carrying the compiled `aiburn` binary.
 on:
   push:
     tags: ["v*"]
@@ -46,8 +44,7 @@ jobs:
     name: publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    # Trusted publishing (OIDC) — no API token/secret to manage. Configure a
-    # PyPI "trusted publisher" for this repo + workflow once, on first release.
+    # PyPI trusted publishing (OIDC): no API token.
     environment: pypi
     permissions:
       id-token: write
