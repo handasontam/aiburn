@@ -100,6 +100,10 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-opus-4-5", c(5.0, 25.0)),
     ("claude-opus-4-1", c(15.0, 75.0)),
     ("claude-opus-4", c(15.0, 75.0)),
+    // Fable 5.2 is cheaper than Fable 5.1 and reads cache at 2.5% of input;
+    // its own key keeps it from prefix-matching `claude-fable-5`.
+    ("claude-fable-5-2", c_read(8.0, 40.0, 0.2)),
+    ("claude-fable-5-2-fast", c_read(16.0, 80.0, 0.4)),
     // Fable 5.1 reads cache at $0.25/MTok (2.5% of input, not the usual 10%).
     ("claude-fable-5-1", c_read(10.0, 50.0, 0.25)),
     ("claude-fable-5", c(10.0, 50.0)),
