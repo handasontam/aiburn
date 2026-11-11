@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use crate::model::{ServiceTier, Tokens};
+use crate::time::days_from_civil;
 
 /// Rates in USD per 1,000,000 tokens.
 pub struct Rate {
@@ -12,20 +13,17 @@ pub struct Rate {
     pub long_context: Option<LongContext>,
 }
 
-/// A request whose whole context (fresh + cached input, cache writes
-/// included) exceeds `threshold` tokens bills entirely at these multiples of
-/// the base rates — a per-request switch, not a marginal breakpoint.
+/// Multiples of the base rates for a whole request over `threshold`.
 #[derive(Clone, Copy)]
 pub struct LongContext {
     pub threshold: u64,
-    pub input: f64, // also scales cache writes
+    pub input: f64,
     pub output: f64,
     pub cache_read: f64,
 }
 
-/// Every tiered OpenAI model in models.dev's 2026-10-28 snapshot uses exactly
-/// this tier, so `o_lc` derives it rather than tabulating rates. Matches
-/// ccusage.
+/// Every tiered OpenAI model shares this tier, so it is derived rather than
+/// tabulated per model.
 const OPENAI_LONG_CONTEXT: LongContext = LongContext {
     threshold: 272_000,
     input: 2.0,
@@ -33,7 +31,6 @@ const OPENAI_LONG_CONTEXT: LongContext = LongContext {
     cache_read: 2.0,
 };
 
-/// Haiku 5.5 is the one Claude model priced by prompt length.
 const HAIKU_5_5_LONG_CONTEXT: LongContext = LongContext {
     threshold: 100_000,
     input: 5.0,
@@ -41,14 +38,11 @@ const HAIKU_5_5_LONG_CONTEXT: LongContext = LongContext {
     cache_read: 5.0,
 };
 
-/// Anthropic: 5m cache write = 1.25× input, 1h = 2× input, cache read = 0.1×.
-const fn c(input: f64, output: f64) -> Rate {
-    c_read(input, output, input * 0.1)
+const fn anthropic(input: f64, output: f64) -> Rate {
+    anthropic_cached(input, output, input * 0.1)
 }
 
-/// Anthropic with an explicit cache-read rate, for models that break the usual
-/// 10%-of-input rule while keeping the cache-write multipliers.
-const fn c_read(input: f64, output: f64, cache_read: f64) -> Rate {
+const fn anthropic_cached(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
@@ -59,8 +53,7 @@ const fn c_read(input: f64, output: f64, cache_read: f64) -> Rate {
     }
 }
 
-/// OpenAI: no separate cache-write; cached input has its own rate.
-const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
+const fn openai(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         input,
         output,
@@ -71,117 +64,100 @@ const fn o(input: f64, output: f64, cache_read: f64) -> Rate {
     }
 }
 
-/// OpenAI model with a long-context tier (every GPT-5.4+ flagship).
-const fn o_lc(input: f64, output: f64, cache_read: f64) -> Rate {
+const fn openai_long(input: f64, output: f64, cache_read: f64) -> Rate {
     Rate {
         long_context: Some(OPENAI_LONG_CONTEXT),
-        ..o(input, output, cache_read)
+        ..openai(input, output, cache_read)
     }
 }
 
-/// Curated public list pricing for the models Claude Code and Codex actually
-/// emit. Premium (Fast/Priority) builds are `-fast` keys next to their base
-/// model, tabulated rather than derived because OpenAI's premium is not one
-/// multiple (1.75× for o3, 2.5× for GPT-5.5). See `resolve` for how a logged
-/// name matches these keys.
+/// Premium (Fast/Priority) rates are tabulated as `-fast` keys rather than
+/// derived because the premium is not one multiple (1.75× for o3, 2.5× for
+/// GPT-5.5).
 static TABLE: &[(&str, Rate)] = &[
-    // --- Anthropic / Claude Code ---
-    // Opus 5.5 is cheaper than Opus 5 and reads cache at 5% of input; its own
-    // key keeps it from prefix-matching `claude-opus-5`.
-    ("claude-opus-5-5", c_read(4.0, 20.0, 0.2)),
-    ("claude-opus-5-5-fast", c_read(8.0, 40.0, 0.4)),
-    ("claude-opus-5", c(5.0, 25.0)),
-    // Fast mode: same model, ~2.5× output speed at premium rates.
-    ("claude-opus-5-fast", c(10.0, 50.0)),
-    ("claude-opus-4-8", c(5.0, 25.0)),
-    ("claude-opus-4-8-fast", c(10.0, 50.0)),
-    ("claude-opus-4-7", c(5.0, 25.0)),
-    ("claude-opus-4-6", c(5.0, 25.0)),
-    ("claude-opus-4-5", c(5.0, 25.0)),
-    ("claude-opus-4-1", c(15.0, 75.0)),
-    ("claude-opus-4", c(15.0, 75.0)),
-    // Fable 5.2 is cheaper than Fable 5.1 and reads cache at 2.5% of input;
-    // its own key keeps it from prefix-matching `claude-fable-5`.
-    ("claude-fable-5-2", c_read(8.0, 40.0, 0.2)),
-    ("claude-fable-5-2-fast", c_read(16.0, 80.0, 0.4)),
-    // Fable 5.1 reads cache at $0.25/MTok (2.5% of input, not the usual 10%).
-    ("claude-fable-5-1", c_read(10.0, 50.0, 0.25)),
-    ("claude-fable-5", c(10.0, 50.0)),
-    // Sonnet 5.5 reads cache at 5% of input like Opus 5.5; its own key keeps
-    // it from prefix-matching `claude-sonnet-5`.
-    ("claude-sonnet-5-5", c_read(2.0, 10.0, 0.1)),
-    ("claude-sonnet-5", c(2.0, 10.0)),
-    ("claude-sonnet-4-6", c(3.0, 15.0)),
-    ("claude-sonnet-4-5", c(3.0, 15.0)),
-    ("claude-sonnet-4", c(3.0, 15.0)),
-    ("claude-3-5-sonnet", c(3.0, 15.0)),
+    ("claude-opus-5-5", anthropic_cached(4.0, 20.0, 0.2)),
+    ("claude-opus-5-5-fast", anthropic_cached(8.0, 40.0, 0.4)),
+    ("claude-opus-5", anthropic(5.0, 25.0)),
+    ("claude-opus-5-fast", anthropic(10.0, 50.0)),
+    ("claude-opus-4-8", anthropic(5.0, 25.0)),
+    ("claude-opus-4-8-fast", anthropic(10.0, 50.0)),
+    ("claude-opus-4-7", anthropic(5.0, 25.0)),
+    ("claude-opus-4-6", anthropic(5.0, 25.0)),
+    ("claude-opus-4-5", anthropic(5.0, 25.0)),
+    ("claude-opus-4-1", anthropic(15.0, 75.0)),
+    ("claude-opus-4", anthropic(15.0, 75.0)),
+    ("claude-fable-5-2", anthropic_cached(8.0, 40.0, 0.2)),
+    ("claude-fable-5-2-fast", anthropic_cached(16.0, 80.0, 0.4)),
+    ("claude-fable-5-1", anthropic_cached(10.0, 50.0, 0.25)),
+    ("claude-fable-5", anthropic(10.0, 50.0)),
+    ("claude-sonnet-5-5", anthropic_cached(2.0, 10.0, 0.1)),
+    ("claude-sonnet-5", anthropic(2.0, 10.0)),
+    ("claude-sonnet-4-6", anthropic(3.0, 15.0)),
+    ("claude-sonnet-4-5", anthropic(3.0, 15.0)),
+    ("claude-sonnet-4", anthropic(3.0, 15.0)),
+    ("claude-3-5-sonnet", anthropic(3.0, 15.0)),
     (
         "claude-haiku-5-5",
         Rate {
             long_context: Some(HAIKU_5_5_LONG_CONTEXT),
-            ..c(0.1, 0.5)
+            ..anthropic(0.1, 0.5)
         },
     ),
-    ("claude-haiku-4-5", c(1.0, 5.0)),
-    ("claude-3-5-haiku", c(0.8, 4.0)),
-    ("claude-3-opus", c(15.0, 75.0)),
-    ("claude-3-haiku", c(0.25, 1.25)),
-    // --- OpenAI / Codex ---
-    ("gpt-6.1-sol", o_lc(2.0, 10.0, 0.1)),
-    ("gpt-6.1-sol-fast", o_lc(4.0, 20.0, 0.2)),
-    ("gpt-6.1-terra", o_lc(1.0, 5.0, 0.05)),
-    ("gpt-6.1-terra-fast", o_lc(2.0, 10.0, 0.1)),
-    ("gpt-6-astra", o_lc(10.0, 50.0, 1.0)),
-    ("gpt-6-astra-fast", o_lc(20.0, 100.0, 2.0)),
-    ("gpt-6-sol", o_lc(2.0, 10.0, 0.2)),
-    ("gpt-6-sol-fast", o_lc(4.0, 20.0, 0.4)),
-    ("gpt-6-luna", o_lc(0.1, 0.5, 0.01)),
-    ("gpt-6-luna-fast", o_lc(0.2, 1.0, 0.02)),
-    // GPT-5.6 capability models (Sol, Terra, Luna) have distinct rates; the
-    // bare name is aliased to the flagship Sol in `alias`.
-    ("gpt-5.6-sol", o_lc(4.0, 20.0, 0.4)),
-    ("gpt-5.6-sol-fast", o_lc(8.0, 40.0, 0.8)),
-    ("gpt-5.6-terra", o_lc(2.0, 12.0, 0.2)),
-    ("gpt-5.6-terra-fast", o_lc(4.0, 24.0, 0.4)),
-    ("gpt-5.6-luna", o_lc(0.2, 1.2, 0.02)),
-    ("gpt-5.6-luna-fast", o_lc(0.4, 2.4, 0.04)),
-    ("gpt-5.5", o_lc(5.0, 30.0, 0.5)),
-    ("gpt-5.5-fast", o_lc(12.5, 75.0, 1.25)),
-    ("gpt-5.4", o_lc(2.5, 15.0, 0.25)),
-    ("gpt-5.4-fast", o_lc(5.0, 30.0, 0.5)),
-    ("gpt-5.4-mini", o(0.75, 4.5, 0.075)),
-    ("gpt-5.4-mini-fast", o(1.5, 9.0, 0.15)),
-    ("gpt-5.4-nano", o(0.2, 1.25, 0.02)),
-    ("gpt-5.3-codex", o(1.75, 14.0, 0.175)),
-    ("gpt-5.3-codex-fast", o(3.5, 28.0, 0.35)),
-    ("gpt-5.3", o(1.75, 14.0, 0.175)),
-    ("gpt-5.2-codex", o(1.75, 14.0, 0.175)),
-    ("gpt-5.2", o(1.75, 14.0, 0.175)),
-    ("gpt-5.2-fast", o(3.5, 28.0, 0.35)),
-    ("gpt-5.1-codex-mini", o(0.25, 2.0, 0.025)),
-    ("gpt-5.1-codex-max", o(1.25, 10.0, 0.125)),
-    ("gpt-5.1-codex", o(1.25, 10.0, 0.125)),
-    ("gpt-5.1", o(1.25, 10.0, 0.125)),
-    ("gpt-5.1-fast", o(2.5, 20.0, 0.25)),
-    ("gpt-5-codex", o(1.25, 10.0, 0.125)),
-    ("gpt-5-mini", o(0.25, 2.0, 0.025)),
-    ("gpt-5-mini-fast", o(0.45, 3.6, 0.045)),
-    ("gpt-5-nano", o(0.05, 0.4, 0.005)),
-    ("gpt-5", o(1.25, 10.0, 0.125)),
-    ("gpt-5-fast", o(2.5, 20.0, 0.25)),
-    ("codex-mini-latest", o(1.5, 6.0, 0.375)),
-    ("codex-mini", o(1.5, 6.0, 0.375)),
-    ("o3", o(2.0, 8.0, 0.5)),
-    ("o3-fast", o(3.5, 14.0, 0.875)),
-    ("o4-mini", o(1.1, 4.4, 0.275)),
-    ("o4-mini-fast", o(2.0, 8.0, 0.5)),
-    // Pro models publish no cached-input discount, so cached tokens bill as
-    // fresh input; their own keys keep them off the base model's rate.
-    ("gpt-5.5-pro", o_lc(30.0, 180.0, 30.0)),
-    ("gpt-5.4-pro", o_lc(30.0, 180.0, 30.0)),
-    ("gpt-5.2-pro", o(21.0, 168.0, 21.0)),
-    ("gpt-5-pro", o(15.0, 120.0, 15.0)),
-    ("o3-pro", o(20.0, 80.0, 20.0)),
+    ("claude-haiku-4-5", anthropic(1.0, 5.0)),
+    ("claude-3-5-haiku", anthropic(0.8, 4.0)),
+    ("claude-3-opus", anthropic(15.0, 75.0)),
+    ("claude-3-haiku", anthropic(0.25, 1.25)),
+    ("gpt-6.1-sol", openai_long(2.0, 10.0, 0.1)),
+    ("gpt-6.1-sol-fast", openai_long(4.0, 20.0, 0.2)),
+    ("gpt-6.1-terra", openai_long(1.0, 5.0, 0.05)),
+    ("gpt-6.1-terra-fast", openai_long(2.0, 10.0, 0.1)),
+    ("gpt-6-astra", openai_long(10.0, 50.0, 1.0)),
+    ("gpt-6-astra-fast", openai_long(20.0, 100.0, 2.0)),
+    ("gpt-6-sol", openai_long(2.0, 10.0, 0.2)),
+    ("gpt-6-sol-fast", openai_long(4.0, 20.0, 0.4)),
+    ("gpt-6-luna", openai_long(0.1, 0.5, 0.01)),
+    ("gpt-6-luna-fast", openai_long(0.2, 1.0, 0.02)),
+    ("gpt-5.6-sol", openai_long(4.0, 20.0, 0.4)),
+    ("gpt-5.6-sol-fast", openai_long(8.0, 40.0, 0.8)),
+    ("gpt-5.6-terra", openai_long(2.0, 12.0, 0.2)),
+    ("gpt-5.6-terra-fast", openai_long(4.0, 24.0, 0.4)),
+    ("gpt-5.6-luna", openai_long(0.2, 1.2, 0.02)),
+    ("gpt-5.6-luna-fast", openai_long(0.4, 2.4, 0.04)),
+    ("gpt-5.5", openai_long(5.0, 30.0, 0.5)),
+    ("gpt-5.5-fast", openai_long(12.5, 75.0, 1.25)),
+    ("gpt-5.4", openai_long(2.5, 15.0, 0.25)),
+    ("gpt-5.4-fast", openai_long(5.0, 30.0, 0.5)),
+    ("gpt-5.4-mini", openai(0.75, 4.5, 0.075)),
+    ("gpt-5.4-mini-fast", openai(1.5, 9.0, 0.15)),
+    ("gpt-5.4-nano", openai(0.2, 1.25, 0.02)),
+    ("gpt-5.3-codex", openai(1.75, 14.0, 0.175)),
+    ("gpt-5.3-codex-fast", openai(3.5, 28.0, 0.35)),
+    ("gpt-5.3", openai(1.75, 14.0, 0.175)),
+    ("gpt-5.2-codex", openai(1.75, 14.0, 0.175)),
+    ("gpt-5.2", openai(1.75, 14.0, 0.175)),
+    ("gpt-5.2-fast", openai(3.5, 28.0, 0.35)),
+    ("gpt-5.1-codex-mini", openai(0.25, 2.0, 0.025)),
+    ("gpt-5.1-codex-max", openai(1.25, 10.0, 0.125)),
+    ("gpt-5.1-codex", openai(1.25, 10.0, 0.125)),
+    ("gpt-5.1", openai(1.25, 10.0, 0.125)),
+    ("gpt-5.1-fast", openai(2.5, 20.0, 0.25)),
+    ("gpt-5-codex", openai(1.25, 10.0, 0.125)),
+    ("gpt-5-mini", openai(0.25, 2.0, 0.025)),
+    ("gpt-5-mini-fast", openai(0.45, 3.6, 0.045)),
+    ("gpt-5-nano", openai(0.05, 0.4, 0.005)),
+    ("gpt-5", openai(1.25, 10.0, 0.125)),
+    ("gpt-5-fast", openai(2.5, 20.0, 0.25)),
+    ("codex-mini-latest", openai(1.5, 6.0, 0.375)),
+    ("codex-mini", openai(1.5, 6.0, 0.375)),
+    ("o3", openai(2.0, 8.0, 0.5)),
+    ("o3-fast", openai(3.5, 14.0, 0.875)),
+    ("o4-mini", openai(1.1, 4.4, 0.275)),
+    ("o4-mini-fast", openai(2.0, 8.0, 0.5)),
+    ("gpt-5.5-pro", openai_long(30.0, 180.0, 30.0)),
+    ("gpt-5.4-pro", openai_long(30.0, 180.0, 30.0)),
+    ("gpt-5.2-pro", openai(21.0, 168.0, 21.0)),
+    ("gpt-5-pro", openai(15.0, 120.0, 15.0)),
+    ("o3-pro", openai(20.0, 80.0, 20.0)),
 ];
 
 /// Premium usage is priced through a `-fast` sibling key. Some logged names
@@ -193,7 +169,7 @@ pub fn tiered_model(model: String, tier: ServiceTier) -> String {
     }
 }
 
-const AUTO_REVIEW_LUNA_AT_MS: i64 = 1_785_369_600_000; // 2026-07-30T00:00:00Z
+const AUTO_REVIEW_LUNA_AT_MS: i64 = days_from_civil(2026, 7, 30) * 86_400_000;
 
 /// Bare aliases and virtual model names → a concrete pricing key.
 fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
@@ -204,8 +180,7 @@ fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
         // Older logs omit the capability suffix; the bare name is the flagship.
         "gpt-6" => Some("gpt-6-astra"),
         "gpt-5.6" => Some("gpt-5.6-sol"),
-        // The raw name is retained in reports, but its underlying model
-        // changed from GPT-5.5 to GPT-5.6-Luna on the public cutover date.
+        // Reports keep the raw name; the model behind it changed on this date.
         "codex-auto-review" if at_ms >= AUTO_REVIEW_LUNA_AT_MS => Some("gpt-5.6-luna"),
         "codex-auto-review" => Some("gpt-5.5"),
         _ => None,
@@ -216,7 +191,6 @@ fn find(key: &str) -> Option<(&'static str, &'static Rate)> {
     TABLE.iter().find(|(k, _)| *k == key).map(|(k, r)| (*k, r))
 }
 
-/// Returns the matched `TABLE` entry as (key, rate).
 fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
     if let Some(hit) = find(key) {
         return Some(hit);
@@ -224,7 +198,6 @@ fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
     if let Some(hit) = alias(key, at_ms).and_then(find) {
         return Some(hit);
     }
-    // longest matching prefix (handles dated/regional suffixes)
     TABLE
         .iter()
         .filter(|(k, _)| key.starts_with(*k))
@@ -232,14 +205,9 @@ fn lookup(key: &str, at_ms: i64) -> Option<(&'static str, &'static Rate)> {
         .map(|(k, r)| (*k, r))
 }
 
-/// Match a logged model name to its rate: exact, then bare alias, then
-/// longest prefix (so dated/regional variants resolve to their base). A
-/// `-fast` build resolves its base name first and then takes that key's
-/// premium sibling, so `claude-opus-5-20260301-fast` finds `claude-opus-5-fast`
-/// instead of prefix-matching the standard rate. A base with no premium key
-/// keeps its own rate, which undercounts rather than dropping the row to $0.
+/// Exact key, then alias, then longest prefix (dated/regional variants). A
+/// `-fast` name resolves its base first, then takes that key's `-fast` sibling.
 fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
-    // Logged names are already lowercase; only allocate for the odd one out.
     let key: Cow<str> = if model.bytes().any(|b| b.is_ascii_uppercase()) {
         Cow::Owned(model.to_ascii_lowercase())
     } else {
@@ -252,9 +220,6 @@ fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
     Some(find(&format!("{base_key}-fast")).map_or(base_rate, |(_, r)| r))
 }
 
-/// Cost in USD, or None when the model has no known pricing. `at_ms` is when
-/// the usage happened so date-based model aliases remain historically
-/// reproducible.
 pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> Option<f64> {
     let r = resolve(model, at_ms)?;
     let context = t.input + t.cache_read + t.cache_write_5m + t.cache_write_1h;
