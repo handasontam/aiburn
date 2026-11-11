@@ -19,10 +19,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14 # Apple Silicon
+          # Pinned macOS images get retired out from under tagged releases;
+          # both targets build on Apple Silicon, Intel by cross-compiling.
+          - runner: macos-latest
             target: aarch64-apple-darwin
-          - runner: macos-14 # cross-compile Intel on Apple Silicon
-            # (GitHub-hosted macos-13 Intel runners are scarce/being retired)
+          - runner: macos-latest
             target: x86_64-apple-darwin
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
