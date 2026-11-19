@@ -71,9 +71,9 @@ const fn openai_long(input: f64, output: f64, cache_read: f64) -> Rate {
     }
 }
 
-/// Premium (Fast/Priority) rates are tabulated as `-fast` keys rather than
-/// derived because the premium is not one multiple (1.75× for o3, 2.5× for
-/// GPT-5.5).
+/// Premium tiers are tabulated as `-fast` / `-ultrafast` sibling keys rather
+/// than derived because the premium is not one multiple (1.75× for o3, 2.5×
+/// for GPT-5.5). An `-ultrafast-promo` key wins before `ULTRAFAST_LIST_AT_MS`.
 static TABLE: &[(&str, Rate)] = &[
     ("claude-opus-5-5", anthropic_cached(4.0, 20.0, 0.2)),
     ("claude-opus-5-5-fast", anthropic_cached(8.0, 40.0, 0.4)),
@@ -109,14 +109,23 @@ static TABLE: &[(&str, Rate)] = &[
     ("claude-3-haiku", anthropic(0.25, 1.25)),
     ("gpt-6.2-astra", openai_long(8.0, 40.0, 0.4)),
     ("gpt-6.2-astra-fast", openai_long(16.0, 80.0, 0.8)),
+    ("gpt-6.2-astra-ultrafast", openai_long(48.0, 240.0, 2.4)),
+    (
+        "gpt-6.2-astra-ultrafast-promo",
+        openai_long(24.0, 120.0, 1.2),
+    ),
     ("gpt-6.2-sol", openai_long(2.0, 10.0, 0.1)),
     ("gpt-6.2-sol-fast", openai_long(4.0, 20.0, 0.2)),
+    ("gpt-6.2-sol-ultrafast", openai_long(12.0, 60.0, 0.6)),
+    ("gpt-6.2-sol-ultrafast-promo", openai_long(6.0, 30.0, 0.3)),
     ("gpt-6.1-sol", openai_long(2.0, 10.0, 0.1)),
     ("gpt-6.1-sol-fast", openai_long(4.0, 20.0, 0.2)),
+    ("gpt-6.1-sol-ultrafast", openai_long(12.0, 60.0, 0.6)),
     ("gpt-6.1-terra", openai_long(1.0, 5.0, 0.05)),
     ("gpt-6.1-terra-fast", openai_long(2.0, 10.0, 0.1)),
     ("gpt-6-astra", openai_long(10.0, 50.0, 1.0)),
     ("gpt-6-astra-fast", openai_long(20.0, 100.0, 2.0)),
+    ("gpt-6-astra-ultrafast", openai_long(60.0, 300.0, 6.0)),
     ("gpt-6-sol", openai_long(2.0, 10.0, 0.2)),
     ("gpt-6-sol-fast", openai_long(4.0, 20.0, 0.4)),
     ("gpt-6-luna", openai_long(0.1, 0.5, 0.01)),
@@ -164,16 +173,36 @@ static TABLE: &[(&str, Rate)] = &[
     ("o3-pro", openai(20.0, 80.0, 20.0)),
 ];
 
-/// Premium usage is priced through a `-fast` sibling key. Some logged names
-/// already carry the suffix.
-pub fn tiered_model(model: String, tier: ServiceTier) -> String {
+fn suffix(tier: ServiceTier) -> &'static str {
     match tier {
-        ServiceTier::Fast if !model.ends_with("-fast") => model + "-fast",
-        _ => model,
+        ServiceTier::Standard => "",
+        ServiceTier::Fast => "-fast",
+        ServiceTier::Ultrafast => "-ultrafast",
+    }
+}
+
+/// Inverse of `tiered_model`. `-ultrafast` does not end in `-fast`, so the
+/// order of the checks does not matter.
+fn split_tier(model: &str) -> (&str, ServiceTier) {
+    [ServiceTier::Fast, ServiceTier::Ultrafast]
+        .into_iter()
+        .find_map(|t| Some((model.strip_suffix(suffix(t))?, t)))
+        .unwrap_or((model, ServiceTier::Standard))
+}
+
+/// Premium usage is priced through a sibling key named by the tier suffix.
+/// Some logged names already carry it.
+pub fn tiered_model(model: String, tier: ServiceTier) -> String {
+    if model.ends_with(suffix(tier)) {
+        model
+    } else {
+        model + suffix(tier)
     }
 }
 
 const AUTO_REVIEW_LUNA_AT_MS: i64 = days_from_civil(2026, 7, 30) * 86_400_000;
+/// Ultrafast promotion ends at midnight Pacific (PST, UTC−8) on 2027-03-01.
+const ULTRAFAST_LIST_AT_MS: i64 = days_from_civil(2027, 3, 1) * 86_400_000 + 8 * 3_600_000;
 
 fn alias(model: &str, at_ms: i64) -> Option<&'static str> {
     match model {
@@ -214,11 +243,17 @@ fn resolve(model: &str, at_ms: i64) -> Option<&'static Rate> {
     } else {
         Cow::Borrowed(model)
     };
-    let Some(base) = key.strip_suffix("-fast") else {
-        return lookup(&key, at_ms).map(|(_, r)| r);
-    };
+    let (base, tier) = split_tier(&key);
     let (base_key, base_rate) = lookup(base, at_ms)?;
-    Some(find(&format!("{base_key}-fast")).map_or(base_rate, |(_, r)| r))
+    let premium = |s: &str| find(&format!("{base_key}{s}"));
+    let rate = match tier {
+        ServiceTier::Standard => return Some(base_rate),
+        ServiceTier::Ultrafast if at_ms < ULTRAFAST_LIST_AT_MS => {
+            premium("-ultrafast-promo").or_else(|| premium("-ultrafast"))
+        }
+        _ => premium(suffix(tier)),
+    };
+    Some(rate.map_or(base_rate, |(_, r)| r))
 }
 
 pub fn cost_for(model: &str, t: &Tokens, at_ms: i64) -> Option<f64> {
@@ -334,6 +369,18 @@ mod tests {
     }
 
     #[test]
+    fn ultrafast_promo_ends_at_list_cutover() {
+        let t = short();
+        let at = ULTRAFAST_LIST_AT_MS;
+        assert_eq!(usd("gpt-6.2-sol-ultrafast", &t, at - 1), 30.63);
+        assert_eq!(usd("gpt-6.2-sol-ultrafast", &t, at), 61.26);
+        // Models without a promotion bill list rates throughout.
+        assert_eq!(usd("gpt-6-ultrafast", &t, at - 1), 306.6);
+        // A model without Ultrafast keeps its standard rate rather than $0.
+        assert_eq!(usd("gpt-6-luna-ultrafast", &t, 0), usd("gpt-6-luna", &t, 0));
+    }
+
+    #[test]
     fn auto_review_switches_to_luna_on_cutover() {
         let t = short();
         let at = AUTO_REVIEW_LUNA_AT_MS;
@@ -386,8 +433,8 @@ mod tests {
                 "openai" => {}
                 _ => panic!("unexpected provider in: {line}"),
             }
-            // models.dev publishes no long-context tier for Fast modes.
-            if !model.ends_with("-fast") {
+            // models.dev publishes no long-context tier for premium modes.
+            if split_tier(model).1 == ServiceTier::Standard {
                 match (r.long_context, num(lc_size)) {
                     (None, None) => {}
                     (Some(_), None) => {

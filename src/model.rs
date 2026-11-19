@@ -20,6 +20,7 @@ pub enum ServiceTier {
     #[default]
     Standard,
     Fast,
+    Ultrafast,
 }
 
 impl ServiceTier {
@@ -27,6 +28,7 @@ impl ServiceTier {
     pub fn from_name(name: &str) -> Self {
         match name {
             "fast" | "priority" => ServiceTier::Fast,
+            "ultrafast" => ServiceTier::Ultrafast,
             _ => ServiceTier::Standard,
         }
     }

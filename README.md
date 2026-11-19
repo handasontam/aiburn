@@ -40,7 +40,7 @@ object per (date/month, agent, model), with the raw model name in `models`.
 - **Fast at any size** — scans gigabytes of history in well under a second, with
   near-instant startup, so it stays snappy as your logs grow.
 - **Accurate cost** — recomputed from token counts (including cache tiers), with
-  date-aware model aliases and Codex Standard/Fast/Priority pricing.
+  date-aware model aliases and Codex Standard/Fast/Priority/Ultrafast pricing.
 
 ## Run it
 
@@ -115,9 +115,9 @@ back to Standard.
 Two details worth knowing:
 
 - **Fast mode** costs more per token. Fast/Priority usage appears as its own
-  `-fast` row for both agents, priced at the per-model premium rate where one
-  is published; otherwise at the base rate, which undercounts rather than
-  dropping the row.
+  `-fast` row for both agents, and Codex Ultrafast as an `-ultrafast` row,
+  priced at the per-model premium rate where one is published; otherwise at
+  the base rate, which undercounts rather than dropping the row.
 - **Codex replay history is skipped.** Forking or resuming a session copies the
   parent rollout's records into the new file; those replayed token events
   belong to the parent's own file and are not charged again.
